@@ -70,6 +70,8 @@ pub enum Kind {
     Release(Vec<String>),
     Clear,
     Set(&'static str, Expr),
+    /// SET PROCEDURE TO: the programs whose procedures and classes become available.
+    Procedures(Vec<String>),
     /// HELP: ask the IDE to show the reference.
     Help,
     Data(DataCmd),
@@ -999,6 +1001,33 @@ impl Parser {
                 let n = if self.peek().is_some() { self.expr()? } else { Expr::Lit(Value::Num(10.0)) };
                 self.eol()?;
                 return Ok(Kind::Set("DECIMALS", n));
+            }
+            if is_kw(&option, "PROCEDURE") {
+                self.expect_kw("TO")?;
+                let mut files = Vec::new();
+                while self.peek().is_some() && !self.at_kw("ADDITIVE") {
+                    files.push(match self.peek().cloned() {
+                        // a quoted name may carry a path and an extension; the file is looked up by its bare name
+                        Some(Tok::Str(s)) => {
+                            self.i += 1;
+                            let file = s.rsplit(['/', '\\']).next().unwrap_or_default();
+                            file.rsplit_once('.').map_or(file, |(stem, _)| stem).to_uppercase()
+                        }
+                        _ => {
+                            let name = self.ident()?;
+                            if self.eat_op(".") {
+                                self.ident()?;
+                            }
+                            name
+                        }
+                    });
+                    if !self.eat_op(",") {
+                        break;
+                    }
+                }
+                self.eat_kw("ADDITIVE");
+                self.eol()?;
+                return Ok(Kind::Procedures(files));
             }
             if is_kw(&option, "SYSMENU") && self.eat_kw("TO") {
                 self.skip_line();

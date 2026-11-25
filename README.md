@@ -35,7 +35,8 @@ el SQL.
   abreviadas a cuatro letras, prefijo `m.`, cadenas con `'`, `"` y `[]`, fechas `{^2024-01-31}`.
 - **Sentencias:** `?`, asignación, `STORE`, `IF`, `DO CASE`, `FOR`, `FOR EACH`, `DO WHILE`, `LOOP`, `EXIT`,
   `PROCEDURE`, `FUNCTION`, `DO ... WITH`, `RETURN`, `PARAMETERS`, `LPARAMETERS`, `LOCAL`, `PRIVATE`,
-  `PUBLIC`, `DIMENSION`, `RELEASE`, `CLEAR`, `WITH`, `#DEFINE`, `SET EXACT`, `SET DECIMALS`.
+  `PUBLIC`, `DIMENSION`, `RELEASE`, `CLEAR`, `WITH`, `#DEFINE`, `SET EXACT`, `SET DECIMALS`,
+  `SET PROCEDURE TO` para usar las funciones y clases de otro programa.
 - **Semántica de FoxPro:** variables privadas visibles en las rutinas llamadas, paso por referencia,
   comparación de cadenas con `=` según `SET EXACT`, y 85 funciones integradas.
 - **Tablas:** `CREATE TABLE`, `CREATE CURSOR`, `USE`, `SELECT` de área, `APPEND BLANK`, `INSERT INTO`,

@@ -825,3 +825,26 @@ fn a_project_lists_what_its_folder_holds() {
     assert_eq!(project["tables"][0]["name"], "CLIENTES");
     assert_eq!(project["tables"][0]["fields"][1], serde_json::json!({ "name": "SALDO", "kind": "N", "width": 10, "decimals": 2 }));
 }
+
+#[test]
+fn set_procedure_shares_routines_between_programs() {
+    let dir = std::env::temp_dir().join(format!("fost-setproc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Utilidades.fost"), "? 'no se ejecuta'\nFUNCTION doble(n)\nRETURN n * 2\nDEFINE CLASS Caja AS Custom\nlado = 3\nENDDEFINE").unwrap();
+    std::fs::write(dir.join("textos.fost"), "PROCEDURE saluda\n? 'hola'\nENDPROC\nPROCEDURE falla\n? 1 / 0").unwrap();
+    let mut it = Interp::default();
+    it.dir = dir.clone();
+    let mut run = |src: &str| {
+        let res = it.run(src);
+        let out = it.take_output();
+        res.map(|_| out).map_err(|e| e.to_string())
+    };
+    // the file's own code does not run; its functions and classes are there afterwards
+    assert_eq!(run("SET PROCEDURE TO utilidades\n? doble(21)\no = CREATEOBJECT('Caja')\n? o.lado").unwrap(), "\n42\n3");
+    // several files, quoted with path and extension as old programs write them, and ADDITIVE
+    assert_eq!(run("SET PROC TO \"libs\\TEXTOS.PRG\", utilidades.prg ADDITIVE\nDO saluda\n? doble(1)").unwrap(), "\nhola\n2");
+    assert_eq!(run("SET PROCEDURE TO\n? doble(2)").unwrap(), "\n4");
+    assert_eq!(run("DO falla").unwrap_err(), "textos.fost, línea 5: División entre cero");
+    assert_eq!(run("SET PROCEDURE TO nadie").unwrap_err(), "Línea 1: Procedimiento o programa no encontrado: NADIE");
+    std::fs::remove_dir_all(dir).unwrap();
+}

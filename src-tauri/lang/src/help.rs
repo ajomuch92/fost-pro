@@ -27,6 +27,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("LPARAMETERS nombres", "Recibe los argumentos como variables locales."),
     ("RETURN [expr]", "Termina la rutina y devuelve un valor (.T. si no se indica)."),
     ("DO nombre [WITH args]", "Ejecuta un procedimiento o el programa nombre.fost. Las variables se pasan por referencia."),
+    ("SET PROCEDURE TO programa [, programa...]", "Deja disponibles los procedimientos, funciones y clases de otros programas, sin ejecutarlos."),
     ("DEFINE CLASS nombre AS clase ... ENDDEFINE", "Define una clase con propiedades, ADD OBJECT y métodos PROCEDURE o FUNCTION."),
     ("WITH objeto ... ENDWITH", "Dentro del bloque, .Propiedad se refiere a ese objeto."),
     ("DO FORM nombre [WITH args] [NAME var] [NOSHOW]", "Abre el formulario nombre.fostform."),

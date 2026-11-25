@@ -442,6 +442,14 @@ impl Interp {
                     self.decimals = n as usize;
                 }
             },
+            // shortcut: procedures are never taken away, so with or without ADDITIVE the files add up,
+            // and SET PROCEDURE TO alone does nothing; upgrade if a program relies on one file hiding another
+            Kind::Procedures(files) => {
+                for file in files {
+                    // its procedures and classes are kept; its main code is not run
+                    self.load(file)?;
+                }
+            }
             Kind::Help => self.help = true,
             Kind::Data(cmd) => self.exec_data(cmd)?,
             Kind::Menu(cmd) => self.exec_menu(cmd)?,
