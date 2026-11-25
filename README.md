@@ -8,8 +8,9 @@ Hecho con [Tauri](https://tauri.app) (Rust), Vue 3, TypeScript y Tailwind CSS.
 
 ## Estado
 
-El proyecto está en desarrollo. Hoy se puede escribir y ejecutar programas, y diseñar y ejecutar
-formularios. No hay base de datos todavía.
+El proyecto está en desarrollo. Hoy se puede escribir y ejecutar programas, diseñar y ejecutar
+formularios, y trabajar con tablas mediante los comandos de registros de FoxPro. Falta el SQL y enlazar
+los formularios a los datos.
 
 | Parte | Estado |
 | --- | --- |
@@ -20,7 +21,8 @@ formularios. No hay base de datos todavía.
 | Formularios en ejecución (`DO FORM`) | Hecho, con las propiedades básicas |
 | Diseñador visual de formularios (`.fostform`) | Hecho, primera versión |
 | Ayuda integrada (F1 o `HELP`) | Hecho |
-| Base de datos (`USE`, `SCAN`, `REPLACE`, SQL) | Pendiente |
+| Tablas: `USE`, `REPLACE`, `SCAN`, `SEEK`, índices, áreas de trabajo | Hecho, primera entrega |
+| SQL (`SELECT`, `UPDATE`, `DELETE FROM`), `BROWSE`, formularios enlazados a datos | Pendiente |
 | Proyectos y migrador desde FoxPro | Pendiente |
 | Reportes, ejecutables | Sin planear todavía |
 
@@ -32,7 +34,13 @@ formularios. No hay base de datos todavía.
   `PROCEDURE`, `FUNCTION`, `DO ... WITH`, `RETURN`, `PARAMETERS`, `LPARAMETERS`, `LOCAL`, `PRIVATE`,
   `PUBLIC`, `DIMENSION`, `RELEASE`, `CLEAR`, `WITH`, `#DEFINE`, `SET EXACT`, `SET DECIMALS`.
 - **Semántica de FoxPro:** variables privadas visibles en las rutinas llamadas, paso por referencia,
-  comparación de cadenas con `=` según `SET EXACT`, y 73 funciones integradas.
+  comparación de cadenas con `=` según `SET EXACT`, y 85 funciones integradas.
+- **Tablas:** `CREATE TABLE`, `CREATE CURSOR`, `USE`, `SELECT` de área, `APPEND BLANK`, `INSERT INTO`,
+  `REPLACE`, `DELETE`, `RECALL`, `PACK`, `ZAP`, `GO`, `SKIP`, `LOCATE`, `CONTINUE`, `SCAN`, `INDEX ON`,
+  `SET ORDER`, `SEEK`, `SET DELETED`, `COUNT`, `SUM` y `LIST`, con los alcances `ALL`, `NEXT`, `REST`, `FOR` y
+  `WHILE`. Se comportan como en FoxPro: número de registro, marca de borrado, puntero con `EOF()` y
+  `BOF()`, campos de texto rellenos hasta su ancho, y un campo gana a una variable del mismo nombre
+  (`m.nombre` llega a la variable).
 - **Objetos:** clases con herencia, `ADD OBJECT`, `THIS`, `THISFORM`, `DODEFAULT()`.
 - **Formularios:** 19 controles, con los eventos `Load`, `Init`, `Click`, `InteractiveChange`, `GotFocus`,
   `LostFocus`, `Timer`, `Activate` y `Destroy`. `MESSAGEBOX()` e `INPUTBOX()` para dialogar con el usuario.
@@ -42,7 +50,8 @@ formularios. No hay base de datos todavía.
   - Contenedores: `Container`, y `PageFrame` con sus `Page` (pestañas). Se pueden anidar.
   - Otros: `Timer`, y `HyperLink`, que se dibuja como un enlace y abre su `Url` en el navegador.
 - **IDE:** editor con resaltado, diseñador de formularios (arrastrar, redimensionar, propiedades, código
-  por evento, controles dentro de contenedores y pestañas), ventana de comandos con historial, y
+  por evento; los controles se arrastran dentro y fuera de contenedores y pestañas), ventana de comandos
+  con historial, y
   `MODIFY COMMAND`, `MODIFY FORM` y `CREATE FORM`.
 
 La lista completa de comandos, funciones, clases y propiedades está en la ayuda de la aplicación.
@@ -59,10 +68,12 @@ La lista completa de comandos, funciones, clases y propiedades está en la ayuda
 - Un formulario sigue abierto hasta `Release()` o cerrarlo, aunque ninguna variable lo referencie.
 - Los controles solo tienen las propiedades básicas: posición, tamaño, texto, colores y fuente. Asignar
   una que no existe da error.
-- Sin base de datos no hay `ControlSource` hacia tablas ni `Grid`.
+- Los órdenes de `INDEX ON` duran mientras la aplicación está abierta: al reiniciar hay que crearlos de
+  nuevo. Los datos sí se conservan.
+- En las tablas faltan el `SELECT` de SQL, `BROWSE`, `SET FILTER`, `SET RELATION`, los campos de fecha y
+  hora, y las reglas de columna (`DEFAULT`, `PRIMARY KEY`).
+- Los formularios aún no se enlazan a las tablas: no hay `ControlSource` hacia campos ni `Grid`.
 - `HyperLink` es un control visible, no el objeto invisible de FoxPro; `NavigateTo()` sí funciona igual.
-- En el diseñador, un control no se puede arrastrar de un contenedor a otro: hay que borrarlo y crearlo
-  de nuevo. Las páginas de un `PageFrame` se eligen en la lista de objetos, no haciendo clic en la pestaña.
 - Faltan `Grid`, `Collection`, los menús (`DEFINE MENU`) y los controles ActiveX, que no se podrán portar.
 
 ## Cómo ejecutarlo
@@ -119,18 +130,19 @@ cargo test --workspace     # pruebas del lenguaje y del puente
 
 `corpus.sh` descarga las soluciones en Visual FoxPro de
 [Rosetta Code](https://rosettacode.org) a una carpeta que git ignora, las ejecuta y dice cuántas terminan
-sin error y por qué fallan las demás. Hoy pasan 6 de 34; casi todas las que fallan necesitan la base de
-datos.
+sin error y por qué fallan las demás. Hoy pasan 7 de 34.
 
 ## Formato de los archivos
 
 - **`.fost`**: un programa, en texto plano.
+- **`datos.fostdb`**: las tablas de una carpeta, en una base de datos SQLite. Se crea con el primer
+  `CREATE TABLE`. Los cursores (`CREATE CURSOR`) viven en memoria y no dejan archivo.
 - **`.fostform`**: un formulario, en JSON. Cada objeto tiene `class`, `props`, `methods` (el código de cada
   evento) y `controls`. Solo se guardan las propiedades que difieren del valor por defecto de la clase.
 
 ## Lo que sigue
 
-1. Base de datos: tablas, índices y los comandos de datos de FoxPro.
+1. Más base de datos: `SELECT` y demás SQL, `BROWSE`, órdenes que se conserven, filtros y relaciones.
 2. Enlace de los formularios a los datos: `ControlSource`, `Grid`, entorno de datos.
 3. Proyectos, y el migrador que convierte un proyecto de FoxPro (`.prg`, `.dbf`, `.scx`) e informa de lo
    que no pudo convertir.
