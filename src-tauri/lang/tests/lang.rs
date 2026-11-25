@@ -374,7 +374,7 @@ fn do_form_and_modify_commands() {
     assert_eq!(it.open.take().unwrap().path, Some(dir.join("nuevoprog.fost")));
     it.run("MODIFY COMMAND").unwrap();
     assert!(it.open.take().unwrap().path.is_none());
-    assert_eq!(it.run("CREATE TABLE x").unwrap_err().msg, "Esta variante de CREATE aún no está soportada");
+    assert_eq!(it.run("CREATE VIEW x").unwrap_err().msg, "Esta variante de CREATE aún no está soportada");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -469,4 +469,194 @@ fn nested_controls_in_a_form_file() {
     it.ui_event(frame["children"][1]["id"].as_u64().unwrap(), &serde_json::Value::Null, Some("Activate")).unwrap();
     assert_eq!(it.take_output(), "\nelegida 2\npage 2");
     assert_eq!(it.forms_json()[0]["children"][0]["props"]["ACTIVEPAGE"], 2.0);
+}
+
+/// Runs a program whose tables live in a fresh folder, removed afterwards.
+fn run_in_folder(tag: &str, src: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("fost-data-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut it = Interp::default();
+    it.dir = dir.clone();
+    let res = it.run(src);
+    let out = it.take_output();
+    drop(it);
+    std::fs::remove_dir_all(dir).unwrap();
+    let out = out.strip_prefix('\n').unwrap_or(&out).to_string();
+    match res {
+        Ok(()) => out,
+        Err(e) => format!("{out}!{e}"),
+    }
+}
+
+const PEOPLE: &str = "
+CREATE CURSOR gente (nombre C(8), edad N(3), activo L, alta D, nota M)
+INSERT INTO gente VALUES ('Carla', 30, .T., {^2024-03-01}, 'uno')
+INSERT INTO gente (nombre, edad) VALUES ('Ana', 25)
+INSERT INTO gente (nombre, edad) VALUES ('Beto', 41)
+APPEND BLANK
+REPLACE nombre WITH 'Dora', edad WITH 25
+";
+
+#[test]
+fn tables_records_and_the_pointer() {
+    let src = format!("{PEOPLE}
+? RECCOUNT(), RECNO(), '[' + nombre + ']', LEN(nombre), ALLTRIM(nombre), edad + 1, activo, EMPTY(alta), ALIAS(), FCOUNT(), FIELD(2)
+GO TOP
+? nombre, activo, alta, nota, BOF(), EOF()
+SKIP -1
+? RECNO(), BOF()
+GO BOTTOM
+SKIP
+? EOF(), RECNO(), '[' + nombre + ']', edad
+SKIP -2
+? nombre
+GO 2
+? nombre, gente.nombre, gente.edad
+GO 9
+");
+    assert_eq!(
+        run(&src),
+        "4 4 [Dora    ] 8 Dora 26 .F. .T. GENTE 5 EDAD\nCarla    .T. 03/01/2024 uno .F. .F.\n1 .T.\n.T. 5 [        ] 0\nBeto    \nAna      Ana      25!Línea 21: El registro 9 está fuera de rango"
+    );
+    assert_eq!(run("? RECNO(), EOF(), USED(), ALIAS() + '|', SELECT()"), "0 .F. .F. | 1");
+    assert_eq!(run("GO TOP"), "!Línea 1: No hay ninguna tabla abierta en esta área de trabajo");
+    assert_eq!(run("USE nada"), "!Línea 1: Tabla no encontrada: NADA");
+    assert_eq!(run(&format!("{PEOPLE}REPLACE edad WITH 'x'")), "!Línea 8: El valor no es del tipo del campo EDAD");
+    assert_eq!(run(&format!("{PEOPLE}REPLACE nada WITH 1")), "!Línea 8: Campo no encontrado: NADA");
+}
+
+#[test]
+fn tables_scopes_search_and_deletion() {
+    let src = format!("{PEOPLE}
+COUNT TO todos
+COUNT FOR edad = 25 TO jovenes
+SUM edad, edad * 2 TO suma, doble FOR edad > 25
+? todos, jovenes, suma, doble, EOF()
+LOCATE FOR edad = 25
+? FOUND(), nombre
+CONTINUE
+? FOUND(), nombre
+CONTINUE
+? FOUND(), EOF()
+REPLACE ALL edad WITH edad + 1 FOR edad < 30
+GO 2
+REPLACE edad WITH 99
+? edad, RECNO()
+SCAN FOR edad > 40
+    ?? ALLTRIM(nombre) + ' '
+ENDSCAN
+? EOF()
+* deleted records stay visible until SET DELETED ON, and stay in the table until PACK
+GO 2
+DELETE
+? DELETED(), RECCOUNT()
+SET DELETED ON
+COUNT TO visibles
+GO TOP
+SKIP
+? visibles, nombre, RECNO()
+RECALL ALL
+COUNT TO visibles
+DELETE FOR edad = 99
+PACK
+? visibles, RECCOUNT(), RECNO(), nombre
+GO BOTTOM
+? RECNO(), nombre
+ZAP
+? RECCOUNT(), EOF()
+");
+    assert_eq!(
+        run(&src),
+        "4 2 71 142 .T.\n.T. Ana     \n.T. Dora    \n.F. .T.\n99 2Ana Beto \n.T.\n.T. 4\n3 Beto     3\n4 3 1 Carla   \n3 Dora    \n0 .T."
+    );
+}
+
+#[test]
+fn tables_orders_and_seek() {
+    let src = format!("{PEOPLE}
+INDEX ON UPPER(nombre) TAG nom
+? nombre, RECNO()
+SCAN
+    ?? ALLTRIM(nombre) + ' '
+ENDSCAN
+INDEX ON edad TAG ed DESCENDING
+GO TOP
+? nombre
+* a descending order runs the ascending one backwards, equal keys included; a new record finds its place
+INSERT INTO gente (nombre, edad) VALUES ('Eva', 35)
+GO TOP
+SKIP
+? nombre
+SEEK 25
+? FOUND(), nombre, SEEK(41), nombre, SEEK(7), EOF()
+SET ORDER TO nom
+SEEK 'BE'
+? FOUND(), nombre
+SET EXACT ON
+? SEEK('BE'), SEEK('BETO')
+SET ORDER TO
+GO TOP
+? nombre
+SEEK 'x'
+");
+    assert_eq!(
+        run(&src),
+        "Ana      2Ana Beto Carla Dora \nBeto    \nEva     \n.T. Dora     .T. Beto     .F. .T.\n.T. Beto    \n.F. .T.\nCarla   !Línea 32: SEEK necesita un orden activo: use INDEX ON o SET ORDER TO"
+    );
+}
+
+#[test]
+fn tables_work_areas_and_names() {
+    let src = "
+CREATE CURSOR uno (id N(3), nombre C(5))
+INSERT INTO uno VALUES (1, 'a')
+CREATE CURSOR dos (id N(3), ref N(3))
+INSERT INTO dos VALUES (7, 1)
+? ALIAS(), SELECT(), SELECT('uno'), SELECT('nada'), USED('uno'), USED('nada')
+nombre = 'variable'
+id = 100
+* a field hides a variable of the same name; m. reaches the variable
+? id, m.id, nombre, uno.nombre, uno.id + dos.id
+SELECT uno
+? id, m.id, nombre, m.nombre
+REPLACE dos.ref WITH 55
+? dos.ref
+USE IN dos
+? USED('dos'), ALIAS()
+USE
+? USED(), nombre
+CLOSE DATABASES ALL
+? SELECT()
+";
+    assert_eq!(run(src), "DOS 2 1 0 .T. .F.\n7 100 variable a     8\n1 100 a     variable\n55\n.F. UNO\n.F. variable\n1");
+    assert_eq!(
+        run("CREATE CURSOR c (n N(2), t C(3))\nINSERT INTO c VALUES (1, 'a')\nINSERT INTO c VALUES (2, 'b')\nDELETE\nINDEX ON t TAG t COLLATE 'Machine'\nLIST\nLIST OFF FIELDS n * 2, t FOR n > 1"),
+        "Registro  N  T\n      1   1  a  \n      2 * 2  b  \n4  b  "
+    );
+    // a cursor is gone once closed
+    assert_eq!(run("CREATE CURSOR c (x N(1))\nUSE\nUSE c"), "!Línea 3: Tabla no encontrada: C");
+}
+
+#[test]
+fn tables_on_disk_persist_and_cursors_leave_no_file() {
+    let dir = std::env::temp_dir().join(format!("fost-disk-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("datos.fostdb");
+    {
+        let mut it = Interp::default();
+        it.dir = dir.clone();
+        it.run("CREATE CURSOR c (x N(1))\nUSE nada").unwrap_err();
+        assert!(!file.exists(), "neither a cursor nor a failed USE creates the database");
+        it.run("CREATE TABLE clientes (nombre C(10), saldo N(8,2))\nINSERT INTO clientes VALUES ('Ana', 10.555)\nAPPEND BLANK\nDELETE").unwrap();
+        assert!(file.exists());
+        assert_eq!(it.run("CREATE TABLE clientes (x N(1))").unwrap_err().msg, "La tabla CLIENTES ya existe");
+    }
+    // a new interpreter, as after restarting the app
+    let mut it = Interp::default();
+    it.dir = dir.clone();
+    it.run("USE clientes ALIAS cli\n? ALIAS(), RECCOUNT(), nombre, saldo\nGO BOTTOM\n? DELETED()").unwrap();
+    assert_eq!(it.take_output(), "\nCLI 2 Ana        10.56\n.T.");
+    drop(it);
+    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(run_in_folder("sql", "SELECT * FROM x"), "!Línea 1: SELECT de SQL aún no está soportado");
 }

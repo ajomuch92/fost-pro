@@ -6,7 +6,10 @@ use std::rc::Rc;
 #[derive(Debug)]
 pub enum Expr {
     Lit(Value),
+    /// A name: a field of the open table if there is one called that, else a variable.
     Var(String),
+    /// `m.name`: a variable, whatever the open table's fields are called.
+    MemVar(String),
     /// `@name`: an argument passed by reference.
     Ref(String),
     /// `name(args)` or `name[args]`: a function call or an array element, decided at run time.
@@ -69,7 +72,58 @@ pub enum Kind {
     Set(&'static str, Expr),
     /// HELP: ask the IDE to show the reference.
     Help,
+    Data(DataCmd),
+    Scan { scope: RecScope, body: Vec<Stmt> },
     Nop,
+}
+
+/// A field of a table being created.
+#[derive(Debug, Clone)]
+pub struct FieldDef {
+    pub name: String,
+    /// C text, M memo, N number, I integer, L logical, D date.
+    pub kind: char,
+    pub width: usize,
+    pub decimals: usize,
+}
+
+/// Which records a command works on: `ALL`, `NEXT n`, `REST`, `FOR cond`, `WHILE cond`.
+#[derive(Debug, Default)]
+pub struct RecScope {
+    pub all: bool,
+    pub rest: bool,
+    pub next: Option<Expr>,
+    pub cond: Option<Expr>,
+    pub until: Option<Expr>,
+}
+
+/// The commands that work on tables. An area is given as an alias (text) or a number.
+#[derive(Debug)]
+pub enum DataCmd {
+    Create { name: String, cursor: bool, fields: Vec<FieldDef> },
+    /// `table` None closes the area.
+    Use { table: Option<Expr>, alias: Option<String>, area: Option<Expr>, order: Option<String> },
+    Select(Expr),
+    CloseAll,
+    AppendBlank,
+    Insert { table: String, fields: Vec<String>, values: Vec<Expr> },
+    /// Each target is an optional alias and a field.
+    Replace { pairs: Vec<(Option<String>, String, Expr)>, scope: RecScope },
+    Delete { recall: bool, scope: RecScope },
+    Pack,
+    Zap,
+    GoTop,
+    GoBottom,
+    Go(Expr),
+    Skip(Option<Expr>),
+    Locate(Rc<RecScope>),
+    Continue,
+    Index { expr: Rc<Expr>, tag: String, descending: bool },
+    SetOrder(Option<String>),
+    Seek(Expr),
+    Count { scope: RecScope, var: Option<String> },
+    Sum { exprs: Vec<Expr>, vars: Vec<String>, scope: RecScope },
+    List { exprs: Vec<Expr>, scope: RecScope, numbers: bool },
 }
 
 #[derive(Debug)]
@@ -110,7 +164,7 @@ const SET_IGNORED: &[&str] = &[
 ];
 const BLOCK_ENDS: &[&str] = &[
     "ENDIF", "ELSE", "ENDDO", "ENDFOR", "NEXT", "ENDCASE", "CASE", "OTHERWISE", "ENDPROC", "ENDFUNC", "ENDWITH",
-    "ENDDEFINE",
+    "ENDDEFINE", "ENDSCAN",
 ];
 const ROUTINE: &[&str] = &["PROCEDURE", "FUNCTION"];
 
@@ -197,7 +251,7 @@ impl Parser {
 
     fn ident(&mut self) -> R<String> {
         match self.peek() {
-            Some(Tok::Ident(w)) => {
+            Some(Tok::Ident(w) | Tok::MemVar(w)) => {
                 let w = w.clone();
                 self.i += 1;
                 Ok(w)
@@ -351,6 +405,221 @@ impl Parser {
         }
     }
 
+    /// `name type[(width[, decimals])]` in CREATE TABLE.
+    fn field_def(&mut self) -> R<FieldDef> {
+        let name = self.ident()?;
+        let type_name = self.ident()?;
+        let (kind, mut width) = match type_name.as_str() {
+            "C" | "CHAR" | "CHARACTER" | "V" | "VARCHAR" => ('C', 10),
+            "N" | "NUMERIC" | "NUMBER" | "F" | "FLOAT" | "B" | "DOUBLE" | "Y" | "CURRENCY" => ('N', 10),
+            "I" | "INT" | "INTEGER" => ('I', 4),
+            "L" | "LOGICAL" => ('L', 1),
+            "D" | "DATE" => ('D', 8),
+            "M" | "MEMO" => ('M', 4),
+            _ => return self.fail(format!("Tipo de campo no soportado: {type_name}")),
+        };
+        let mut decimals = 0;
+        if self.eat_op("(") {
+            let size = |p: &mut Self| match p.peek().cloned() {
+                Some(Tok::Num(n)) if (0.0..=254.0).contains(&n) => {
+                    p.i += 1;
+                    Ok(n as usize)
+                }
+                _ => p.fail("Se esperaba el tamaño del campo"),
+            };
+            width = size(self)?;
+            if self.eat_op(",") {
+                decimals = size(self)?;
+            }
+            self.expect_op(")")?;
+        }
+        // shortcut: NULL / NOT NULL are accepted and ignored; other column rules are refused, not dropped
+        self.eat_kw("NOT");
+        self.eat_kw("NULL");
+        if !(self.at_op(",") || self.at_op(")")) {
+            return self.fail("Esta regla de columna aún no está soportada en CREATE TABLE");
+        }
+        Ok(FieldDef { name, kind, width: width.max(1), decimals })
+    }
+
+    /// A work area written as an alias or a number: `clientes`, `2`, `(expr)`.
+    fn area(&mut self) -> R<Expr> {
+        if matches!(self.peek(), Some(Tok::Ident(_))) { Ok(Expr::Lit(Value::Str(self.ident()?))) } else { self.unary() }
+    }
+
+    /// The `ALL`, `NEXT n`, `REST`, `FOR cond` and `WHILE cond` clauses, in any order.
+    fn rec_scope(&mut self) -> R<RecScope> {
+        let mut scope = RecScope::default();
+        loop {
+            if self.eat_kw("ALL") {
+                scope.all = true;
+            } else if self.eat_kw("REST") {
+                scope.rest = true;
+            } else if self.eat_kw("NEXT") {
+                scope.next = Some(self.unary()?);
+            } else if self.eat_kw("FOR") {
+                scope.cond = Some(self.expr()?);
+            } else if self.eat_kw("WHILE") {
+                scope.until = Some(self.expr()?);
+            } else {
+                return Ok(scope);
+            }
+        }
+    }
+
+    /// The table commands that fit on one line. None when `word` is not one of them.
+    fn data_cmd(&mut self, word: &str) -> R<Option<DataCmd>> {
+        let k = |kw: &str| is_kw(word, kw);
+        let clause = |p: &Self| ["IN", "ALIAS", "AGAIN", "ORDER", "EXCLUSIVE", "SHARED", "NOUPDATE"].iter().any(|c| p.at_kw(c));
+        Ok(Some(if word == "USE" {
+            let mut table = None;
+            if matches!(self.peek(), Some(Tok::Ident(_))) && !clause(self) {
+                table = Some(Expr::Lit(Value::Str(self.ident()?)));
+                // an extension, if written, is ignored: tables have no files of their own
+                if self.eat_op(".") {
+                    self.ident()?;
+                }
+            } else if self.at_op("(") {
+                table = Some(self.unary()?);
+            }
+            let (mut alias, mut area, mut order) = (None, None, None);
+            loop {
+                if self.eat_kw("IN") {
+                    area = Some(self.area()?);
+                } else if self.eat_kw("ALIAS") {
+                    alias = Some(self.ident()?);
+                } else if self.eat_kw("ORDER") {
+                    self.eat_kw("TAG");
+                    order = Some(self.ident()?);
+                } else if !(self.eat_kw("AGAIN") || self.eat_kw("EXCLUSIVE") || self.eat_kw("SHARED") || self.eat_kw("NOUPDATE")) {
+                    break;
+                }
+            }
+            DataCmd::Use { table, alias, area, order }
+        } else if k("SELECT") {
+            // one word after SELECT picks a work area; anything longer is SQL
+            if self.toks().len() != 2 && !self.at_op("(") {
+                return self.fail("SELECT de SQL aún no está soportado");
+            }
+            DataCmd::Select(self.area()?)
+        } else if k("CLOSE") {
+            if !(self.eat_kw("DATABASES") || self.eat_kw("TABLES") || self.eat_kw("ALL")) {
+                return self.fail("Se esperaba CLOSE DATABASES, CLOSE TABLES o CLOSE ALL");
+            }
+            self.eat_kw("ALL");
+            DataCmd::CloseAll
+        } else if k("APPEND") {
+            self.expect_kw("BLANK")?;
+            DataCmd::AppendBlank
+        } else if k("INSERT") {
+            self.expect_kw("INTO")?;
+            let table = self.ident()?;
+            let mut fields = Vec::new();
+            if self.eat_op("(") {
+                fields = self.list(Self::ident)?;
+                self.expect_op(")")?;
+            }
+            self.expect_kw("VALUES")?;
+            self.expect_op("(")?;
+            let values = self.list(Self::expr)?;
+            self.expect_op(")")?;
+            DataCmd::Insert { table, fields, values }
+        } else if k("REPLACE") {
+            let mut scope = self.rec_scope()?;
+            let pairs = self.list(|p| {
+                let first = p.ident()?;
+                let (alias, field) = if p.eat_op(".") { (Some(first), p.ident()?) } else { (None, first) };
+                p.expect_kw("WITH")?;
+                Ok((alias, field, p.expr()?))
+            })?;
+            let after = self.rec_scope()?;
+            scope = RecScope {
+                all: scope.all || after.all,
+                rest: scope.rest || after.rest,
+                next: scope.next.or(after.next),
+                cond: scope.cond.or(after.cond),
+                until: scope.until.or(after.until),
+            };
+            DataCmd::Replace { pairs, scope }
+        } else if k("DELETE") || k("RECALL") {
+            if self.at_kw("FROM") {
+                return self.fail("DELETE de SQL aún no está soportado");
+            }
+            DataCmd::Delete { recall: k("RECALL"), scope: self.rec_scope()? }
+        } else if word == "PACK" {
+            DataCmd::Pack
+        } else if word == "ZAP" {
+            DataCmd::Zap
+        } else if word == "GO" || k("GOTO") {
+            if self.eat_kw("TOP") {
+                DataCmd::GoTop
+            } else if self.eat_kw("BOTTOM") {
+                DataCmd::GoBottom
+            } else {
+                DataCmd::Go(self.expr()?)
+            }
+        } else if word == "SKIP" {
+            DataCmd::Skip(if self.peek().is_some() { Some(self.expr()?) } else { None })
+        } else if k("LOCATE") {
+            DataCmd::Locate(Rc::new(self.rec_scope()?))
+        } else if k("CONTINUE") {
+            DataCmd::Continue
+        } else if k("INDEX") {
+            self.expect_kw("ON")?;
+            let expr = Rc::new(self.expr()?);
+            if !(self.eat_kw("TAG") || self.eat_kw("TO")) {
+                return self.fail("Se esperaba TAG nombre");
+            }
+            let tag = self.ident()?;
+            let mut descending = false;
+            loop {
+                if self.eat_kw("DESCENDING") {
+                    descending = true;
+                } else if self.eat_kw("COLLATE") {
+                    // shortcut: text is always ordered by character code, FoxPro's "MACHINE" collation
+                    self.unary()?;
+                } else if !self.eat_kw("ASCENDING") {
+                    break;
+                }
+            }
+            DataCmd::Index { expr, tag, descending }
+        } else if word == "SEEK" {
+            DataCmd::Seek(self.expr()?)
+        } else if k("COUNT") {
+            let mut scope = self.rec_scope()?;
+            let var = if self.eat_kw("TO") { Some(self.ident()?) } else { None };
+            if scope.cond.is_none() {
+                scope.cond = self.rec_scope()?.cond;
+            }
+            DataCmd::Count { scope, var }
+        } else if word == "SUM" {
+            let mut exprs = Vec::new();
+            if !["TO", "FOR", "ALL", "REST", "NEXT", "WHILE"].iter().any(|c| self.at_kw(c)) {
+                exprs = self.list(Self::expr)?;
+            }
+            let mut scope = self.rec_scope()?;
+            self.expect_kw("TO")?;
+            let vars = self.list(Self::ident)?;
+            if scope.cond.is_none() {
+                scope.cond = self.rec_scope()?.cond;
+            }
+            DataCmd::Sum { exprs, vars, scope }
+        } else if word == "LIST" || k("DISPLAY") {
+            // OFF leaves out the record numbers
+            let mut numbers = !self.eat_kw("OFF");
+            self.eat_kw("FIELDS");
+            let mut exprs = Vec::new();
+            if self.peek().is_some() && !["FOR", "ALL", "REST", "NEXT", "WHILE", "OFF"].iter().any(|c| self.at_kw(c)) {
+                exprs = self.list(Self::expr)?;
+            }
+            let scope = self.rec_scope()?;
+            numbers &= !self.eat_kw("OFF");
+            DataCmd::List { exprs, scope, numbers }
+        } else {
+            return Ok(None);
+        }))
+    }
+
     /// A name being declared, with optional dimensions: `x`, `a[3]`, `a(2, 2)`.
     fn target(&mut self) -> R<Target> {
         let name = self.ident()?;
@@ -387,7 +656,7 @@ impl Parser {
                 self.eol()?;
                 return Ok(Kind::Expr(e));
             }
-            Some(Tok::Op("WITH.")) => return self.place_stmt(),
+            Some(Tok::Op("WITH.") | Tok::MemVar(_)) => return self.place_stmt(),
             Some(Tok::Ident(w)) => w,
             _ => return self.fail("Sentencia no válida. Para ver el valor de una expresión, escribe ? delante"),
         };
@@ -480,6 +749,13 @@ impl Parser {
             let body = self.block(&["ENDWITH"], Some(("WITH", line)))?;
             self.skip_line();
             Kind::With { object, body }
+        } else if word == "SCAN" {
+            let scope = self.rec_scope()?;
+            self.eol()?;
+            Kind::Scan { scope, body: self.loop_body(&["ENDSCAN"], ("SCAN", line))? }
+        } else if let Some(cmd) = self.data_cmd(&word)? {
+            self.eol()?;
+            Kind::Data(cmd)
         } else if k("LOOP") || k("EXIT") {
             if self.loops == 0 {
                 return self.fail(format!("{word} fuera de un bucle"));
@@ -536,6 +812,16 @@ impl Parser {
             };
             self.skip_line();
             kind
+        } else if k("CREATE") && (self.at_kw("TABLE") || self.at_kw("CURSOR")) {
+            let cursor = self.eat_kw("CURSOR");
+            self.i += !cursor as usize;
+            let name = self.ident()?;
+            self.eat_kw("FREE");
+            self.expect_op("(")?;
+            let fields = self.list(Self::field_def)?;
+            self.expect_op(")")?;
+            self.eol()?;
+            Kind::Data(DataCmd::Create { name, cursor, fields })
         } else if k("MODIFY") || k("CREATE") {
             let form = self.eat_kw("FORM");
             if !form && !(k("MODIFY") && self.eat_kw("COMMAND")) {
@@ -560,6 +846,21 @@ impl Parser {
                 }
                 self.eol()?;
                 return Ok(Kind::Set("EXACT", Expr::Lit(Value::Bool(on))));
+            }
+            if is_kw(&option, "DELETED") {
+                let on = self.eat_kw("ON");
+                if !on && !self.eat_kw("OFF") {
+                    return self.fail("Se esperaba ON u OFF");
+                }
+                self.eol()?;
+                return Ok(Kind::Set("DELETED", Expr::Lit(Value::Bool(on))));
+            }
+            if is_kw(&option, "ORDER") {
+                self.expect_kw("TO")?;
+                self.eat_kw("TAG");
+                let tag = if self.peek().is_some() { Some(self.ident()?) } else { None };
+                self.eol()?;
+                return Ok(Kind::Data(DataCmd::SetOrder(tag)));
             }
             if is_kw(&option, "DECIMALS") {
                 self.expect_kw("TO")?;
@@ -662,6 +963,13 @@ impl Parser {
                 return Ok(match self.subscript()? {
                     Some(args) => Expr::Call(name, args),
                     None => Expr::Var(name),
+                });
+            }
+            Some(Tok::MemVar(name)) => {
+                self.i += 1;
+                return Ok(match self.subscript()? {
+                    Some(args) => Expr::Call(name, args),
+                    None => Expr::MemVar(name),
                 });
             }
             _ => return self.fail("Expresión no válida"),

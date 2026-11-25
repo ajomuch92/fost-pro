@@ -12,6 +12,8 @@ pub enum Tok {
     Date(Option<NaiveDate>),
     /// Upper-cased: the language is case-insensitive.
     Ident(String),
+    /// A name written with the `m.` prefix: a variable, never a table field.
+    MemVar(String),
     Op(&'static str),
 }
 
@@ -160,15 +162,17 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
                 }
             }
             _ if ch.is_alphabetic() || ch == '_' => {
-                // `m.` only says "memory variable"; drop it
-                if matches!(ch, 'm' | 'M') && at(i + 1) == '.' && (at(i + 2).is_alphabetic() || at(i + 2) == '_') {
+                // `m.name` is the variable `name`, even when the open table has a field called that
+                let memvar = matches!(ch, 'm' | 'M') && at(i + 1) == '.' && (at(i + 2).is_alphabetic() || at(i + 2) == '_');
+                if memvar {
                     i += 2;
                 }
                 let from = i;
                 while at(i).is_alphanumeric() || at(i) == '_' {
                     i += 1;
                 }
-                toks.push(Tok::Ident(c[from..i].iter().collect::<String>().to_uppercase()));
+                let name = c[from..i].iter().collect::<String>().to_uppercase();
+                toks.push(if memvar { Tok::MemVar(name) } else { Tok::Ident(name) });
             }
             _ => {
                 let op = OPS.iter().find(|op| op.chars().enumerate().all(|(k, x)| at(i + k) == x));

@@ -11,12 +11,15 @@ pub const NAMES: &[&str] = &[
     "TRANSFORM", "CHRTRAN", "ISALPHA", "ISDIGIT", "ABS", "INT", "ROUND", "MOD", "MAX", "MIN", "SQRT", "CEILING",
     "FLOOR", "SIGN", "EXP", "LOG", "LOG10", "PI", "DATE", "TIME", "SECONDS", "CTOD", "DTOC", "DTOS", "YEAR", "MONTH",
     "DAY", "DOW", "CDOW", "CMONTH", "GOMONTH", "EMPTY", "ISNULL", "NVL", "BETWEEN", "INLIST", "ALEN", "IIF", "TYPE",
-    "VARTYPE", "EVALUATE", "RAND", "RGB", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX",
+    "VARTYPE", "EVALUATE", "RAND", "RGB", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX", "RECNO", "RECCOUNT", "EOF", "BOF", "FOUND", "DELETED", "ALIAS",
+    "SELECT", "USED", "FCOUNT", "FIELD", "SEEK",
 ];
 
 /// Implemented by the interpreter, not by `call`.
 #[cfg(test)]
-const SPECIAL: &[&str] = &["IIF", "TYPE", "VARTYPE", "EVALUATE", "RAND", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX"];
+const SPECIAL: &[&str] = &["IIF", "TYPE", "VARTYPE", "EVALUATE", "RAND", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX", "RECNO", "RECCOUNT", "EOF",
+    "BOF", "FOUND", "DELETED", "ALIAS", "SELECT", "USED", "FCOUNT", "FIELD", "SEEK",
+];
 
 pub fn resolve(name: &str) -> Option<&'static str> {
     let exact = NAMES.iter().copied().find(|n| *n == name);

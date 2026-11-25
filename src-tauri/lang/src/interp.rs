@@ -1,3 +1,4 @@
+use crate::data::Data;
 use crate::object::ObjRef;
 use crate::parser::{ClassDef, Expr, Kind, Routine, Scope, Stmt, parse, parse_expr};
 use crate::value::{Array, Value, binary, fmt_num, unary};
@@ -60,7 +61,7 @@ pub(crate) struct Frame {
     pub(crate) with: Vec<ObjRef>,
 }
 
-enum Flow {
+pub(crate) enum Flow {
     Next,
     Loop,
     Exit,
@@ -76,7 +77,7 @@ pub struct Interp {
     pub(crate) classes: HashMap<String, Defined<ClassDef>>,
     /// Where `DO name` and `DO FORM name` look for files.
     pub dir: PathBuf,
-    exact: bool,
+    pub(crate) exact: bool,
     decimals: usize,
     /// frames[0] is the top level; PUBLIC variables live there.
     pub(crate) frames: Vec<Frame>,
@@ -97,6 +98,8 @@ pub struct Interp {
     /// Set by HELP; the host should show the reference.
     pub help: bool,
     pub host: Box<dyn Host>,
+    /// The open tables. None until a program first touches one.
+    pub(crate) data: Option<Data>,
 }
 
 impl Default for Interp {
@@ -118,6 +121,7 @@ impl Default for Interp {
             open: None,
             help: false,
             host: Box::new(()),
+            data: None,
         }
     }
 }
@@ -184,7 +188,7 @@ impl Interp {
         if self.stop.load(Ordering::Relaxed) { Err(err("Ejecución interrumpida")) } else { Ok(()) }
     }
 
-    fn truthy(&mut self, e: &Expr) -> R<bool> {
+    pub(crate) fn truthy(&mut self, e: &Expr) -> R<bool> {
         match self.eval(e)? {
             Value::Bool(b) => Ok(b),
             Value::Null => Ok(false),
@@ -192,7 +196,7 @@ impl Interp {
         }
     }
 
-    fn num(&mut self, e: &Expr) -> R<f64> {
+    pub(crate) fn num(&mut self, e: &Expr) -> R<f64> {
         match self.eval(e)? {
             Value::Num(n) => Ok(n),
             _ => Err(err("Se esperaba un valor numérico")),
@@ -220,7 +224,9 @@ impl Interp {
         let mut refs = Vec::new();
         for a in args {
             refs.push(match a {
-                Expr::Var(n) | Expr::Ref(n) => self.get(n)?,
+                // a name that is a field of the open table is a value like any other
+                Expr::Var(n) if self.field(n)?.is_none() => self.get(n)?,
+                Expr::MemVar(n) | Expr::Ref(n) => self.get(n)?,
                 _ => var(self.eval(a)?),
             });
         }
@@ -243,7 +249,7 @@ impl Interp {
     }
 
     /// Runs a loop body; Some(flow) means the loop must stop and hand `flow` to its caller.
-    fn iteration(&mut self, body: &[Stmt]) -> R<Option<Flow>> {
+    pub(crate) fn iteration(&mut self, body: &[Stmt]) -> R<Option<Flow>> {
         self.tick()?;
         Ok(match self.block(body)? {
             Flow::Exit => Some(Flow::Next),
@@ -421,6 +427,10 @@ impl Interp {
             }
             Kind::Set(option, value) => match *option {
                 "EXACT" => self.exact = self.truthy(value)?,
+                "DELETED" => {
+                    let on = self.truthy(value)?;
+                    self.set_deleted(on)?;
+                }
                 _ => {
                     let n = self.num(value)?;
                     if !(0.0..=18.0).contains(&n) {
@@ -430,6 +440,8 @@ impl Interp {
                 }
             },
             Kind::Help => self.help = true,
+            Kind::Data(cmd) => self.exec_data(cmd)?,
+            Kind::Scan { scope, body } => return self.scan(scope, body),
             Kind::Nop => {}
         }
         Ok(Flow::Next)
@@ -507,7 +519,7 @@ impl Interp {
 
     fn assign(&mut self, place: &Expr, v: Value) -> R<()> {
         match place {
-            Expr::Var(name) => self.set_var(name, v),
+            Expr::Var(name) | Expr::MemVar(name) => self.set_var(name, v),
             Expr::Call(name, idx) => {
                 let idx = self.nums(idx)?;
                 Self::store_element(&mut self.get(name)?.borrow_mut(), &idx, v)?;
@@ -567,13 +579,26 @@ impl Interp {
         Ok(match e {
             Expr::Lit(v) => v.clone(),
             Expr::Var(n) if n == "THIS" || n == "THISFORM" => Value::Object(self.this(n == "THISFORM")?),
-            Expr::Var(n) => self.get(n)?.borrow().clone(),
+            // as in FoxPro, a field of the open table wins over a variable of the same name
+            Expr::Var(n) => match self.field(n)? {
+                Some(v) => v,
+                None => self.get(n)?.borrow().clone(),
+            },
+            Expr::MemVar(n) => self.get(n)?.borrow().clone(),
             Expr::Ref(_) => return Err(err("'@' solo se permite en argumentos de una llamada")),
             Expr::WithObj => match self.top().with.last() {
                 Some(obj) => Value::Object(obj.clone()),
                 None => return Err(err("'.nombre' solo puede usarse dentro de WITH")),
             },
             Expr::Member(object, name) => {
+                // `alias.field`, unless a variable has that name
+                if let Expr::Var(alias) = &**object {
+                    if self.lookup(alias).is_none() {
+                        if let Some(v) = self.alias_field(alias, name)? {
+                            return Ok(v);
+                        }
+                    }
+                }
                 let obj = self.object(object)?;
                 self.get_prop(&obj, name)?
             }
@@ -612,6 +637,9 @@ impl Interp {
         let Some(full) = builtins::resolve(name) else {
             return Err(err(format!("Función no encontrada: {name}")));
         };
+        if let Some(v) = self.data_function(full, args)? {
+            return Ok(v);
+        }
         let arg = |i: usize| args.get(i).ok_or_else(|| err("Faltan argumentos"));
         let text = |it: &mut Self, i: usize| match it.eval(arg(i)?)? {
             Value::Str(s) => Ok(s),

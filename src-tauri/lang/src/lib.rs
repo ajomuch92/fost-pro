@@ -1,6 +1,7 @@
 //! Fost language core: a FoxPro-compatible lexer, parser and tree-walking interpreter.
 
 mod builtins;
+mod data;
 mod interp;
 mod help;
 mod lexer;
