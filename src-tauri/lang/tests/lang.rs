@@ -660,3 +660,78 @@ fn tables_on_disk_persist_and_cursors_leave_no_file() {
     std::fs::remove_dir_all(dir).unwrap();
     assert_eq!(run_in_folder("sql", "SELECT * FROM x"), "!Línea 1: SELECT de SQL aún no está soportado");
 }
+
+#[test]
+fn menus() {
+    let mut it = Interp::default();
+    // the shape of the code FoxPro's menu designer generates, plus a menu of its own
+    let src = r#"
+SET SYSMENU TO
+bloqueado = .T.
+DEFINE PAD archivo OF _MSYSMENU PROMPT "\<Archivo" COLOR SCHEME 3 KEY ALT+A, ""
+DEFINE PAD salir OF _MSYSMENU PROMPT "Salir"
+ON PAD archivo OF _MSYSMENU ACTIVATE POPUP parchivo
+ON SELECTION PAD salir OF _MSYSMENU ? "adiós"
+
+DEFINE POPUP parchivo MARGIN RELATIVE SHADOW COLOR SCHEME 4
+DEFINE BAR 1 OF parchivo PROMPT "Nuevo" KEY CTRL+N, "Ctrl+N"
+DEFINE BAR 2 OF parchivo PROMPT "\-"
+DEFINE BAR 3 OF parchivo PROMPT "Guardar" SKIP FOR bloqueado MESSAGE "Guarda"
+DEFINE BAR 4 OF parchivo PROMPT "Exportar"
+ON SELECTION BAR 1 OF parchivo DO nuevo WITH "x"
+ON SELECTION POPUP parchivo ? "elegido", BAR(), PROMPT(), POPUP(), PAD(), MENU()
+ON BAR 4 OF parchivo ACTIVATE POPUP pexportar
+DEFINE POPUP pexportar
+DEFINE BAR 1 OF pexportar PROMPT "PDF"
+
+DEFINE MENU otro BAR
+DEFINE PAD uno OF otro PROMPT "Uno"
+? BAR(), "[" + PROMPT() + "]"
+
+PROCEDURE nuevo
+    LPARAMETERS que
+    ? "nuevo", que
+ENDPROC
+"#;
+    it.run(src).unwrap();
+    assert_eq!(it.take_output(), "\n0 []");
+    let menus = it.menus_json();
+    // a menu is not drawn until it is activated; the system one always is
+    assert_eq!(menus.as_array().unwrap().len(), 1);
+    assert_eq!(menus[0]["name"], "_MSYSMENU");
+    let bars = &menus[0]["items"][0]["items"];
+    assert_eq!(menus[0]["items"][0]["popup"], "PARCHIVO");
+    assert_eq!(bars[2], serde_json::json!({ "key": "3", "prompt": "Guardar", "disabled": true, "popup": null, "items": null }));
+    assert_eq!(bars[3]["items"][0]["prompt"], "PDF");
+
+    it.menu_event("_MSYSMENU", "ARCHIVO", Some(("PARCHIVO", "1"))).unwrap();
+    assert_eq!(it.take_output(), "\nnuevo x");
+    // a bar without a command of its own runs the popup's
+    it.menu_event("_MSYSMENU", "ARCHIVO", Some(("PARCHIVO", "3"))).unwrap();
+    assert_eq!(it.take_output(), "\nelegido 3 Guardar PARCHIVO ARCHIVO _MSYSMENU");
+    it.menu_event("_MSYSMENU", "SALIR", None).unwrap();
+    assert_eq!(it.take_output(), "\nadiós");
+    // nothing to run, and an item that is gone, are not errors
+    it.menu_event("_MSYSMENU", "ARCHIVO", None).unwrap();
+    it.menu_event("_MSYSMENU", "NADIE", None).unwrap();
+
+    it.run("bloqueado = .F.\nACTIVATE MENU otro\nON SELECTION PAD uno OF otro ? 1 / 0").unwrap();
+    let menus = it.menus_json();
+    assert_eq!(menus[0]["items"][0]["items"][2]["disabled"], false);
+    assert_eq!(menus[1]["name"], "OTRO");
+    assert_eq!(it.menu_event("OTRO", "UNO", None).unwrap_err().to_string(), "ON SELECTION, línea 3: División entre cero");
+
+    // defining again replaces instead of piling up
+    it.run("DEFINE PAD salir OF _MSYSMENU PROMPT 'Cerrar'\nDEACTIVATE MENU otro").unwrap();
+    let menus = it.menus_json();
+    assert_eq!((menus.as_array().unwrap().len(), menus[0]["items"].as_array().unwrap().len()), (1, 2));
+    assert_eq!(menus[0]["items"][1]["prompt"], "Cerrar");
+    it.run("ACTIVATE MENU otro\nRELEASE MENUS otro\nRELEASE POPUPS\nSET SYSMENU TO DEFAULT").unwrap();
+    assert_eq!(it.menus_json(), serde_json::json!([]));
+
+    assert_eq!(it.run("DEFINE PAD x OF nada PROMPT 'x'").unwrap_err().msg, "Menú no definido: NADA");
+    assert_eq!(it.run("ON SELECTION BAR 9 OF _MSYSMENU ? 1").unwrap_err().msg, "Desplegable no definido: _MSYSMENU");
+    assert_eq!(it.run("DEFINE BAR 1 OF p PROMPT 'x' BEFORE y").unwrap_err().msg, "Cláusula no soportada en DEFINE PAD o DEFINE BAR");
+    // classes still work next to menu definitions
+    assert_eq!(run("DEFINE MENU m\no = CREATEOBJECT('C')\n? o.n\nDEFINE CLASS C AS Custom\nn = 5\nENDDEFINE"), "5");
+}

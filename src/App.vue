@@ -8,6 +8,7 @@ import { dir, helpOpen, openRequest, report, run, runForm } from "./engine";
 import CommandWindow from "./components/CommandWindow.vue";
 import FormDesigner from "./components/FormDesigner.vue";
 import FormLayer from "./components/FormLayer.vue";
+import MenuBar from "./components/MenuBar.vue";
 import HelpScreen from "./components/HelpScreen.vue";
 import PromptDialog from "./components/PromptDialog.vue";
 import ProgramEditor from "./components/ProgramEditor.vue";
@@ -158,6 +159,7 @@ const button = "flex items-center gap-1.5 rounded px-2 py-1 hover:bg-neutral-200
       <button type="button" :class="button" title="F1" @click="helpOpen = !helpOpen"><CircleQuestionMark :size="16" aria-hidden="true" />Ayuda (F1)</button>
       <span class="ml-auto text-neutral-500">{{ name }}{{ dirty ? " (sin guardar)" : "" }}</span>
     </header>
+    <MenuBar />
     <div class="relative flex min-h-0 flex-1 flex-col">
       <ProgramEditor v-show="kind === 'program'" ref="editor" class="min-h-0 flex-1" @change="dirty = true" />
       <FormDesigner v-show="kind === 'form'" ref="designer" class="min-h-0 flex-1" @change="dirty = true" />

@@ -1,4 +1,5 @@
 use crate::data::Data;
+use crate::menu::Menus;
 use crate::object::ObjRef;
 use crate::parser::{ClassDef, Expr, Kind, Routine, Scope, Stmt, parse, parse_expr};
 use crate::value::{Array, Value, binary, fmt_num, unary};
@@ -100,6 +101,7 @@ pub struct Interp {
     pub host: Box<dyn Host>,
     /// The open tables. None until a program first touches one.
     pub(crate) data: Option<Data>,
+    pub(crate) menus: Menus,
 }
 
 impl Default for Interp {
@@ -122,6 +124,7 @@ impl Default for Interp {
             help: false,
             host: Box::new(()),
             data: None,
+            menus: Menus::default(),
         }
     }
 }
@@ -233,7 +236,7 @@ impl Interp {
         Ok(refs)
     }
 
-    fn block(&mut self, stmts: &[Stmt]) -> R<Flow> {
+    pub(crate) fn block(&mut self, stmts: &[Stmt]) -> R<Flow> {
         for s in stmts {
             let flow = self.exec(s).map_err(|mut e| {
                 if e.line == 0 {
@@ -441,6 +444,7 @@ impl Interp {
             },
             Kind::Help => self.help = true,
             Kind::Data(cmd) => self.exec_data(cmd)?,
+            Kind::Menu(cmd) => self.exec_menu(cmd)?,
             Kind::Scan { scope, body } => return self.scan(scope, body),
             Kind::Nop => {}
         }
@@ -637,6 +641,9 @@ impl Interp {
         let Some(full) = builtins::resolve(name) else {
             return Err(err(format!("Función no encontrada: {name}")));
         };
+        if let Some(v) = self.menus.function(full) {
+            return Ok(v);
+        }
         if let Some(v) = self.data_function(full, args)? {
             return Ok(v);
         }

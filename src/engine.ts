@@ -23,6 +23,9 @@ export type DrawNode = Pick<FormNode, "base" | "props"> &
   };
 /** A built-in class: its properties with their defaults, and the events it can raise. */
 export type ClassInfo = { name: string; props: [string, unknown][]; events: string[] };
+/** A pad of a menu bar or a bar of a popup. `items` is the popup it opens, when it opens one. */
+export type MenuItem = { key: string; prompt: string; disabled: boolean; popup: string | null; items: MenuItem[] | null };
+export type Menu = { name: string; items: MenuItem[] };
 export type OpenRequest = { form: boolean; path: string | null };
 type Entry = { kind: "cmd" | "out" | "err"; text: string };
 type RunResult = {
@@ -31,6 +34,7 @@ type RunResult = {
   line: number | null;
   clear: boolean;
   forms: FormNode[];
+  menus: Menu[];
   focus: number | null;
   open: OpenRequest | null;
   help: boolean;
@@ -40,6 +44,8 @@ type RunResult = {
 export const entries = ref<Entry[]>([]);
 /** The forms on screen. */
 export const forms = ref<FormNode[]>([]);
+/** The menu bars a program has put on screen. */
+export const menus = ref<Menu[]>([]);
 /** Id of a control a program asked to focus; whoever handles it sets it back to null. */
 export const focus = ref<number | null>(null);
 /** A file a program asked the IDE to open (MODIFY COMMAND and friends). */
@@ -81,6 +87,7 @@ async function request(command: string, args: Record<string, unknown>) {
     if (r.output) entries.value.push({ kind: "out", text: r.output.replace(/^\n/, "") });
     if (r.error) report(r.error);
     forms.value = r.forms;
+    menus.value = r.menus;
     if (r.focus != null) focus.value = r.focus;
     if (r.open) openRequest.value = r.open;
     if (r.help) helpOpen.value = true;
@@ -106,5 +113,9 @@ export function runForm(json: string, name: string) {
 /** Tells a form what the user did: the values that changed, and the event to run, if any. */
 export const uiEvent = (id: number, props: Record<string, unknown>, event: string | null) =>
   request("ui_event", { id, props, event });
+
+/** Tells a menu what the user chose: a pad, or the bar `bar` of `popup` reached through that pad. */
+export const menuEvent = (menu: string, pad: string, popup: string | null, bar: string | null) =>
+  request("menu_event", { menu, pad, popup, bar });
 
 export const stop = () => invoke("stop_code");

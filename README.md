@@ -21,6 +21,7 @@ los formularios a los datos.
 | Formularios en ejecución (`DO FORM`) | Hecho, con las propiedades básicas |
 | Diseñador visual de formularios (`.fostform`) | Hecho, primera versión |
 | Ayuda integrada (F1 o `HELP`) | Hecho |
+| Menús (`DEFINE MENU`, `DEFINE POPUP`, `_MSYSMENU`) | Hecho, primera versión |
 | Tablas: `USE`, `REPLACE`, `SCAN`, `SEEK`, índices, áreas de trabajo | Hecho, primera entrega |
 | SQL (`SELECT`, `UPDATE`, `DELETE FROM`), `BROWSE`, formularios enlazados a datos | Pendiente |
 | Proyectos y migrador desde FoxPro | Pendiente |
@@ -49,6 +50,11 @@ los formularios a los datos.
   - Dibujo: `Image`, `Line`, `Shape`.
   - Contenedores: `Container`, y `PageFrame` con sus `Page` (pestañas). Se pueden anidar.
   - Otros: `Timer`, y `HyperLink`, que se dibuja como un enlace y abre su `Url` en el navegador.
+- **Menús:** `DEFINE MENU`, `DEFINE PAD`, `DEFINE POPUP`, `DEFINE BAR`, `ON PAD`, `ON BAR`, `ON SELECTION`,
+  `ACTIVATE MENU`, `DEACTIVATE MENU`, `RELEASE MENUS`, `RELEASE POPUPS` y `SET SYSMENU TO`, con submenús,
+  separadores (`\-`), letra subrayada (`\<`), `SKIP FOR` y las funciones `BAR()`, `PROMPT()`, `POPUP()`,
+  `PAD()` y `MENU()`. Los menús se dibujan en una barra bajo la de herramientas; lo definido en
+  `_MSYSMENU` aparece sin activarlo, como el código que genera el diseñador de menús de FoxPro.
 - **IDE:** editor con resaltado, diseñador de formularios (arrastrar, redimensionar, propiedades, código
   por evento; los controles se arrastran dentro y fuera de contenedores y pestañas), ventana de comandos
   con historial, y
@@ -74,7 +80,11 @@ La lista completa de comandos, funciones, clases y propiedades está en la ayuda
   hora, y las reglas de columna (`DEFAULT`, `PRIMARY KEY`).
 - Los formularios aún no se enlazan a las tablas: no hay `ControlSource` hacia campos ni `Grid`.
 - `HyperLink` es un control visible, no el objeto invisible de FoxPro; `NavigateTo()` sí funciona igual.
-- Faltan `Grid`, `Collection`, los menús (`DEFINE MENU`) y los controles ActiveX, que no se podrán portar.
+- `ACTIVATE MENU` no detiene el programa a esperar una elección: el menú queda en pantalla y el programa
+  sigue. Un bucle que lo active una y otra vez no termina.
+- En los menús no hay atajos de teclado (`KEY` se acepta y se ignora), `BEFORE`/`AFTER`, barras del sistema
+  (`_MED_COPY`...), `ACTIVATE POPUP` suelto como menú contextual ni diseñador visual de menús.
+- Faltan `Grid`, `Collection` y los controles ActiveX, que no se podrán portar.
 
 ## Cómo ejecutarlo
 

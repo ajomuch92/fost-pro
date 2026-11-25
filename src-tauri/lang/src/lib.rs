@@ -5,6 +5,7 @@ mod data;
 mod interp;
 mod help;
 mod lexer;
+mod menu;
 mod object;
 mod objects;
 mod parser;

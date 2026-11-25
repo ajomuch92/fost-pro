@@ -12,13 +12,13 @@ pub const NAMES: &[&str] = &[
     "FLOOR", "SIGN", "EXP", "LOG", "LOG10", "PI", "DATE", "TIME", "SECONDS", "CTOD", "DTOC", "DTOS", "YEAR", "MONTH",
     "DAY", "DOW", "CDOW", "CMONTH", "GOMONTH", "EMPTY", "ISNULL", "NVL", "BETWEEN", "INLIST", "ALEN", "IIF", "TYPE",
     "VARTYPE", "EVALUATE", "RAND", "RGB", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX", "RECNO", "RECCOUNT", "EOF", "BOF", "FOUND", "DELETED", "ALIAS",
-    "SELECT", "USED", "FCOUNT", "FIELD", "SEEK",
+    "SELECT", "USED", "FCOUNT", "FIELD", "SEEK", "MENU", "PAD", "POPUP", "BAR", "PROMPT",
 ];
 
 /// Implemented by the interpreter, not by `call`.
 #[cfg(test)]
 const SPECIAL: &[&str] = &["IIF", "TYPE", "VARTYPE", "EVALUATE", "RAND", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX", "RECNO", "RECCOUNT", "EOF",
-    "BOF", "FOUND", "DELETED", "ALIAS", "SELECT", "USED", "FCOUNT", "FIELD", "SEEK",
+    "BOF", "FOUND", "DELETED", "ALIAS", "SELECT", "USED", "FCOUNT", "FIELD", "SEEK", "MENU", "PAD", "POPUP", "BAR", "PROMPT",
 ];
 
 pub fn resolve(name: &str) -> Option<&'static str> {

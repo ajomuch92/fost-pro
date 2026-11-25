@@ -17,6 +17,8 @@ struct RunResult {
     clear: bool,
     /// The visible forms, to draw.
     forms: Json,
+    /// The menus on screen, to draw.
+    menus: Json,
     /// Id of the control that asked for the focus.
     focus: Option<u64>,
     /// A file MODIFY COMMAND, MODIFY FORM or CREATE FORM asked to open.
@@ -36,6 +38,8 @@ enum Request {
     /// The designer's Run: a form that may not be saved yet.
     RunForm { json: String, name: String },
     UiEvent { id: u64, props: Json, event: Option<String> },
+    /// The user chose a pad of `menu`, or the bar `(popup, number)` reached through it.
+    MenuEvent { menu: String, pad: String, bar: Option<(String, String)> },
 }
 
 /// A request, the directory where DO looks for files, and where to send the result.
@@ -72,6 +76,11 @@ async fn run_form(json: String, name: String, dir: Option<String>, engine: Engin
 #[tauri::command]
 async fn ui_event(id: u64, props: Json, event: Option<String>, engine: EngineState<'_>) -> Result<RunResult, String> {
     engine.request(Request::UiEvent { id, props, event }, None).await
+}
+
+#[tauri::command]
+async fn menu_event(menu: String, pad: String, popup: Option<String>, bar: Option<String>, engine: EngineState<'_>) -> Result<RunResult, String> {
+    engine.request(Request::MenuEvent { menu, pad, bar: popup.zip(bar) }, None).await
 }
 
 #[tauri::command]
@@ -184,6 +193,9 @@ fn start_engine(host: Box<dyn Host + Send>) -> Engine {
                     Request::Run { code } => interp.run(&code),
                     Request::RunForm { json, name } => interp.run_form(&json, &name),
                     Request::UiEvent { id, props, event } => interp.ui_event(id, &props, event.as_deref()),
+                    Request::MenuEvent { menu, pad, bar } => {
+                        interp.menu_event(&menu, &pad, bar.as_ref().map(|(popup, number)| (popup.as_str(), number.as_str())))
+                    }
                 }
                 .err();
                 let open = interp.open.take();
@@ -193,6 +205,7 @@ fn start_engine(host: Box<dyn Host + Send>) -> Engine {
                     error: error.map(|e| e.to_string()),
                     clear: std::mem::take(&mut interp.clear),
                     forms: interp.forms_json(),
+                    menus: interp.menus_json(),
                     focus: interp.focus.take(),
                     help: std::mem::take(&mut interp.help),
                     open: open.map(|o| OpenRequest { form: o.form, path: o.path.map(|p| p.to_string_lossy().into_owned()) }),
@@ -216,7 +229,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            run_code, run_form, ui_event, stop_code, answer_prompt, class_info, reference, read_file, read_binary, write_file
+            run_code, run_form, ui_event, menu_event, stop_code, answer_prompt, class_info, reference, read_file, read_binary, write_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -250,5 +263,10 @@ mod tests {
         let id = shown.forms[0]["children"][0]["id"].as_u64().unwrap();
         let clicked = send(Request::UiEvent { id, props: Json::Null, event: Some("Click".into()) });
         assert_eq!(clicked.forms[0]["props"]["CAPTION"], "pulsado");
+
+        let defined = run("DEFINE PAD hola OF _MSYSMENU PROMPT 'Hola'\nON SELECTION PAD hola OF _MSYSMENU ? PROMPT()");
+        assert_eq!(defined.menus[0]["items"][0]["prompt"], "Hola");
+        let chosen = send(Request::MenuEvent { menu: "_MSYSMENU".into(), pad: "HOLA".into(), bar: None });
+        assert_eq!(chosen.output, "\nHola");
     }
 }

@@ -73,6 +73,7 @@ pub enum Kind {
     /// HELP: ask the IDE to show the reference.
     Help,
     Data(DataCmd),
+    Menu(MenuCmd),
     Scan { scope: RecScope, body: Vec<Stmt> },
     Nop,
 }
@@ -124,6 +125,32 @@ pub enum DataCmd {
     Count { scope: RecScope, var: Option<String> },
     Sum { exprs: Vec<Expr>, vars: Vec<String>, scope: RecScope },
     List { exprs: Vec<Expr>, scope: RecScope, numbers: bool },
+}
+
+/// The item a menu command names: a pad of a menu, or a numbered bar of a popup.
+#[derive(Debug)]
+pub enum MenuItem {
+    Pad(String),
+    Bar(Expr),
+}
+
+#[derive(Debug)]
+pub enum MenuCmd {
+    /// DEFINE MENU or DEFINE POPUP: an empty one, replacing any of that name.
+    Define { popup: bool, name: String },
+    /// DEFINE PAD or DEFINE BAR. `skip` disables the item while it is true.
+    Item { item: MenuItem, of: String, prompt: Expr, skip: Option<Rc<Expr>> },
+    /// ON PAD or ON BAR: the popup the item opens. None detaches it.
+    Opens { item: MenuItem, of: String, popup: Option<String> },
+    /// ON SELECTION: what choosing runs. Without `item`, it is for every item of the
+    /// menu or popup `of` that has no command of its own. Empty code removes it.
+    Selection { item: Option<MenuItem>, popup: bool, of: String, code: Rc<Vec<Stmt>> },
+    /// ACTIVATE MENU and DEACTIVATE MENU.
+    Show { name: String, on: bool },
+    /// RELEASE MENUS or POPUPS; no names means all of them.
+    Release { popups: bool, names: Vec<String> },
+    /// SET SYSMENU TO: empties the system menu.
+    ResetSys,
 }
 
 #[derive(Debug)]
@@ -293,7 +320,11 @@ impl Parser {
 
     /// Whether the current line is the command `kw` (and not an assignment to a variable so named).
     fn starts(&self, kw: &str) -> bool {
-        self.i == 0 && self.at_kw(kw) && self.toks().get(1) != Some(&Tok::Op("="))
+        self.i == 0
+            && self.at_kw(kw)
+            && self.toks().get(1) != Some(&Tok::Op("="))
+            // only DEFINE CLASS opens a block: DEFINE MENU, PAD, POPUP and BAR are plain statements
+            && (kw != "DEFINE" || matches!(self.toks().get(1), Some(Tok::Ident(w)) if is_kw(w, "CLASS")))
     }
 
     /// Statements up to, not including, a line starting with one of `ends`.
@@ -620,6 +651,101 @@ impl Parser {
         }))
     }
 
+    /// `name OF menu` or `number OF popup`, after the word PAD or BAR.
+    fn menu_item(&mut self, bar: bool) -> R<(MenuItem, String)> {
+        let item = if bar { MenuItem::Bar(self.expr()?) } else { MenuItem::Pad(self.ident()?) };
+        self.expect_kw("OF")?;
+        Ok((item, self.ident()?))
+    }
+
+    /// The rest of the line as a command of its own, which is what ON SELECTION takes.
+    fn rest_as_code(&mut self) -> R<Rc<Vec<Stmt>>> {
+        let (no, toks) = (self.line(), self.toks()[self.i..].to_vec());
+        self.skip_line();
+        let lines = if toks.is_empty() { Vec::new() } else { vec![Line { no, toks }] };
+        Ok(Rc::new(Parser { lines, ln: 0, i: 0, loops: 0 }.block(&[], None)?))
+    }
+
+    /// The menu commands that start with `word`, whose next word is already known to be theirs.
+    fn menu_cmd(&mut self, word: &str) -> R<MenuCmd> {
+        let k = |kw: &str| is_kw(word, kw);
+        Ok(if k("DEFINE") && (self.at_kw("MENU") || self.at_kw("POPUP")) {
+            let popup = self.at_kw("POPUP");
+            self.i += 1;
+            let name = self.ident()?;
+            // BAR, MARGIN, RELATIVE, SHADOW, COLOR...: they only style FoxPro's own menus
+            self.skip_line();
+            MenuCmd::Define { popup, name }
+        } else if k("DEFINE") {
+            let bar = self.at_kw("BAR");
+            self.i += 1;
+            let (item, of) = self.menu_item(bar)?;
+            self.expect_kw("PROMPT")?;
+            let prompt = self.expr()?;
+            let mut skip = None;
+            while self.peek().is_some() {
+                if self.eat_kw("SKIP") {
+                    let always = Expr::Lit(Value::Bool(true));
+                    skip = Some(Rc::new(if self.eat_kw("FOR") { self.expr()? } else { always }));
+                } else if self.eat_kw("KEY") {
+                    // shortcut: `KEY CTRL+S, "Ctrl+S"` is read and ignored; upgrade when menus must answer the keyboard
+                    self.ident()?;
+                    while self.eat_op("+") {
+                        self.ident()?;
+                    }
+                    if self.eat_op(",") {
+                        self.expr()?;
+                    }
+                } else if self.eat_kw("MESSAGE") || self.eat_kw("MARK") || (self.eat_kw("COLOR") && self.eat_kw("SCHEME")) {
+                    self.expr()?;
+                } else {
+                    return self.fail("Cláusula no soportada en DEFINE PAD o DEFINE BAR");
+                }
+            }
+            self.skip_line();
+            MenuCmd::Item { item, of, prompt, skip }
+        } else if word == "ON" && self.eat_kw("SELECTION") {
+            let (item, popup, of) = if self.at_kw("PAD") || self.at_kw("BAR") {
+                let bar = self.at_kw("BAR");
+                self.i += 1;
+                let (item, of) = self.menu_item(bar)?;
+                (Some(item), bar, of)
+            } else {
+                let popup = self.eat_kw("POPUP");
+                if !popup {
+                    self.expect_kw("MENU")?;
+                }
+                (None, popup, self.ident()?)
+            };
+            MenuCmd::Selection { item, popup, of, code: self.rest_as_code()? }
+        } else if word == "ON" {
+            let bar = self.at_kw("BAR");
+            self.i += 1;
+            let (item, of) = self.menu_item(bar)?;
+            let popup = if self.eat_kw("ACTIVATE") {
+                self.expect_kw("POPUP")?;
+                Some(self.ident()?)
+            } else {
+                None
+            };
+            self.eol()?;
+            MenuCmd::Opens { item, of, popup }
+        } else if k("RELEASE") || k("CLEAR") {
+            let popups = self.at_kw("POPUPS");
+            self.i += 1;
+            let names = if self.peek().is_some() && k("RELEASE") { self.list(Self::ident)? } else { Vec::new() };
+            self.eat_kw("EXTENDED");
+            self.eol()?;
+            MenuCmd::Release { popups, names }
+        } else {
+            self.i += 1;
+            let name = self.ident()?;
+            // NOWAIT, PAD name: a menu never makes the program wait here
+            self.skip_line();
+            MenuCmd::Show { name, on: k("ACTIVATE") }
+        })
+    }
+
     /// A name being declared, with optional dimensions: `x`, `a[3]`, `a(2, 2)`.
     fn target(&mut self) -> R<Target> {
         let name = self.ident()?;
@@ -753,6 +879,12 @@ impl Parser {
             let scope = self.rec_scope()?;
             self.eol()?;
             Kind::Scan { scope, body: self.loop_body(&["ENDSCAN"], ("SCAN", line))? }
+        } else if (k("DEFINE") && ["MENU", "POPUP", "PAD", "BAR"].iter().any(|w| self.at_kw(w)))
+            || (word == "ON" && ["SELECTION", "PAD", "BAR"].iter().any(|w| self.at_kw(w)))
+            || ((k("RELEASE") || k("CLEAR")) && (self.at_kw("MENUS") || self.at_kw("POPUPS")))
+            || ((k("ACTIVATE") || k("DEACTIVATE")) && self.at_kw("MENU"))
+        {
+            Kind::Menu(self.menu_cmd(&word)?)
         } else if let Some(cmd) = self.data_cmd(&word)? {
             self.eol()?;
             Kind::Data(cmd)
@@ -867,6 +999,10 @@ impl Parser {
                 let n = if self.peek().is_some() { self.expr()? } else { Expr::Lit(Value::Num(10.0)) };
                 self.eol()?;
                 return Ok(Kind::Set("DECIMALS", n));
+            }
+            if is_kw(&option, "SYSMENU") && self.eat_kw("TO") {
+                self.skip_line();
+                return Ok(Kind::Menu(MenuCmd::ResetSys));
             }
             if !SET_IGNORED.iter().any(|o| is_kw(&option, o)) {
                 return self.fail(format!("SET {option} aún no está soportado"));
