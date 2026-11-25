@@ -2,7 +2,7 @@ use fost_lang::{Host, Interp};
 use serde_json::Value as Json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
 
 /// What the UI gets back from every request to the interpreter.
@@ -20,6 +20,8 @@ struct RunResult {
     focus: Option<u64>,
     /// A file MODIFY COMMAND, MODIFY FORM or CREATE FORM asked to open.
     open: Option<OpenRequest>,
+    /// HELP ran: show the reference.
+    help: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -81,6 +83,19 @@ fn class_info() -> Json {
     fost_lang::class_info()
 }
 
+#[tauri::command]
+fn reference() -> Json {
+    fost_lang::reference()
+}
+
+/// Where the UI sends the answer to an INPUTBOX() the interpreter is waiting on. None: cancelled.
+struct Prompts(Mutex<mpsc::Sender<Option<String>>>);
+
+#[tauri::command]
+fn answer_prompt(value: Option<String>, prompts: tauri::State<'_, Prompts>) {
+    let _ = prompts.0.lock().unwrap().send(value);
+}
+
 // The editor opens and saves wherever the user points the file dialog,
 // so these take any path instead of going through a scoped fs plugin.
 #[tauri::command]
@@ -93,8 +108,11 @@ fn write_file(path: String, text: String) -> Result<(), String> {
     std::fs::write(&path, text).map_err(|e| format!("No se pudo guardar {path}: {e}"))
 }
 
-/// Shows MESSAGEBOX() as a native dialog. It runs on the interpreter thread, so blocking is fine.
-struct Dialogs(tauri::AppHandle);
+/// The dialogs a program can open. They run on the interpreter thread, so blocking is fine.
+struct Dialogs {
+    app: tauri::AppHandle,
+    answers: mpsc::Receiver<Option<String>>,
+}
 
 impl Host for Dialogs {
     fn message_box(&mut self, text: &str, buttons: i64, title: &str) -> Option<i64> {
@@ -112,7 +130,7 @@ impl Host for Dialogs {
             _ => MessageDialogKind::Info,
         };
         let title = if title.is_empty() { "Fost Pro" } else { title };
-        let answer = self.0.dialog().message(text).title(title).kind(kind).buttons(set).blocking_show_with_result();
+        let answer = self.app.dialog().message(text).title(title).kind(kind).buttons(set).blocking_show_with_result();
         Some(match answer {
             MessageDialogResult::Yes => 6,
             MessageDialogResult::No => 7,
@@ -121,6 +139,15 @@ impl Host for Dialogs {
             _ if yes_no => 7,
             _ => 2,
         })
+    }
+
+    /// INPUTBOX(): the UI draws the question and answers through `answer_prompt`.
+    fn input_box(&mut self, prompt: &str, title: &str, default: &str) -> Option<String> {
+        // an answer nobody was waiting for must not be taken as this one
+        while self.answers.try_recv().is_ok() {}
+        let question = serde_json::json!({ "prompt": prompt, "title": title, "default": default });
+        self.app.emit("fost-prompt", question).ok()?;
+        Some(self.answers.recv().ok()?.unwrap_or_default())
     }
 }
 
@@ -153,6 +180,7 @@ fn start_engine(host: Box<dyn Host + Send>) -> Engine {
                     clear: std::mem::take(&mut interp.clear),
                     forms: interp.forms_json(),
                     focus: interp.focus.take(),
+                    help: std::mem::take(&mut interp.help),
                     open: open.map(|o| OpenRequest { form: o.form, path: o.path.map(|p| p.to_string_lossy().into_owned()) }),
                 };
                 let _ = reply.send(result);
@@ -168,10 +196,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            app.manage(start_engine(Box::new(Dialogs(app.handle().clone()))));
+            let (answer, answers) = mpsc::channel();
+            app.manage(Prompts(Mutex::new(answer)));
+            app.manage(start_engine(Box::new(Dialogs { app: app.handle().clone(), answers })));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![run_code, run_form, ui_event, stop_code, class_info, read_file, write_file])
+        .invoke_handler(tauri::generate_handler![
+            run_code, run_form, ui_event, stop_code, answer_prompt, class_info, reference, read_file, write_file
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

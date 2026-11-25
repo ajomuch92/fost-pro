@@ -1,6 +1,7 @@
 // The one place that talks to the interpreter, and the state every panel shows from it.
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 /** An object of a running form. Property names are upper-cased, as the interpreter keeps them. */
 export type FormNode = {
@@ -25,6 +26,7 @@ type RunResult = {
   forms: FormNode[];
   focus: number | null;
   open: OpenRequest | null;
+  help: boolean;
 };
 
 /** What the command window shows. */
@@ -40,6 +42,10 @@ export const pending = ref(0);
 /** Folder where DO and DO FORM look for files; null keeps the one used last. */
 export const dir = ref<string | null>(null);
 export const classes = ref<ClassInfo[]>([]);
+/** Whether the help screen is showing. */
+export const helpOpen = ref(false);
+/** An INPUTBOX() a running program is waiting on. */
+export const question = ref<{ prompt: string; title: string; default: string } | null>(null);
 
 export const report = (text: string) => entries.value.push({ kind: "err", text });
 
@@ -47,6 +53,16 @@ invoke<ClassInfo[]>("class_info").then(
   (info) => (classes.value = info),
   (e) => report(String(e)),
 );
+
+listen<NonNullable<typeof question.value>>("fost-prompt", (e) => (question.value = e.payload)).catch((e) =>
+  report(String(e)),
+);
+
+/** Answers the pending INPUTBOX(); null means the user cancelled. */
+export function answerPrompt(value: string | null) {
+  question.value = null;
+  invoke("answer_prompt", { value });
+}
 
 async function request(command: string, args: Record<string, unknown>) {
   pending.value++;
@@ -60,6 +76,7 @@ async function request(command: string, args: Record<string, unknown>) {
     forms.value = r.forms;
     if (r.focus != null) focus.value = r.focus;
     if (r.open) openRequest.value = r.open;
+    if (r.help) helpOpen.value = true;
   } catch (e) {
     report(String(e));
   }

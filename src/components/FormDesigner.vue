@@ -1,7 +1,19 @@
 <script setup lang="ts">
 // Visual editor for a form file: a tree of { class, props, methods, controls }, saved as JSON.
 // Only the properties that differ from the class defaults are kept, so files stay small.
-import { nextTick, ref, watch } from "vue";
+import { type Component, nextTick, ref, watch } from "vue";
+import {
+  List,
+  Minus,
+  NotebookText,
+  Square,
+  SquareCheck,
+  SquareChevronDown,
+  SquareMousePointer,
+  TextCursorInput,
+  Type,
+  X,
+} from "@lucide/vue";
 import { classes } from "../engine";
 import FormControl, { colorCss } from "./FormControl.vue";
 import ProgramEditor from "./ProgramEditor.vue";
@@ -63,6 +75,16 @@ function rename(node: DesignNode, name: string) {
   node.props.Name = name;
   emit("change");
 }
+
+const icons: Record<string, Component> = {
+  Label: Type,
+  TextBox: TextCursorInput,
+  EditBox: NotebookText,
+  CommandButton: SquareMousePointer,
+  CheckBox: SquareCheck,
+  ComboBox: SquareChevronDown,
+  ListBox: List,
+};
 
 // FoxPro's own names for new controls: Text1, Command1...
 const prefixes: Record<string, string> = {
@@ -177,12 +199,13 @@ defineExpose({
 });
 
 const field = "min-w-0 rounded border border-neutral-400 bg-transparent px-1";
-const tool = "rounded border border-neutral-400 px-2 py-0.5 text-left hover:bg-neutral-200 dark:hover:bg-neutral-700";
+const tool =
+  "flex items-center gap-2 rounded border border-neutral-400 px-2 py-1 text-left hover:bg-neutral-200 dark:hover:bg-neutral-700";
 const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-600";
 </script>
 
 <template>
-  <div class="grid h-full min-h-0 grid-cols-[9.5rem_1fr_17rem] text-sm">
+  <div class="grid h-full min-h-0 grid-cols-[11rem_1fr_17rem] text-sm">
     <nav class="flex flex-col gap-1 overflow-y-auto border-r border-neutral-300 p-2 dark:border-neutral-700" aria-label="Agregar control">
       <button
         v-for="c in classes.filter((c) => c.name !== 'Custom' && c.name !== 'Form')"
@@ -191,6 +214,7 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
         :class="tool"
         @click="add(c.name)"
       >
+        <component :is="icons[c.name]" :size="16" class="shrink-0" aria-hidden="true" />
         {{ c.name }}
       </button>
     </nav>
@@ -198,10 +222,22 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
     <div class="flex min-h-0 min-w-0 flex-col">
       <div class="min-h-0 flex-1 overflow-auto bg-neutral-300 p-4 select-none dark:bg-neutral-800" @pointerdown.self="selected = form">
         <div class="inline-block border border-neutral-600 shadow-lg" :class="{ 'outline-2 outline-blue-500': selected === form }">
-          <div class="bg-blue-700 px-2 py-1 text-white" @pointerdown="selected = form">{{ value(form, "Caption") }}</div>
+          <div class="flex items-center gap-2 bg-blue-700 px-2 py-1 text-white" @pointerdown="selected = form">
+            <span class="flex-1 truncate">{{ value(form, "Caption") }}</span>
+            <Minus v-if="value(form, 'MinButton')" :size="14" aria-hidden="true" />
+            <Square v-if="value(form, 'MaxButton')" :size="12" aria-hidden="true" />
+            <X :size="14" aria-hidden="true" />
+          </div>
           <div
             class="relative text-black"
-            :style="{ width: px(form, 'Width'), height: px(form, 'Height'), backgroundColor: colorCss(num(form, 'BackColor')) }"
+            :style="{
+              width: px(form, 'Width'),
+              height: px(form, 'Height'),
+              backgroundColor: colorCss(num(form, 'BackColor')),
+              // the design grid: a dot every 10 pixels
+              backgroundImage: 'radial-gradient(circle, rgb(0 0 0 / 0.4) 1px, transparent 1px)',
+              backgroundSize: '10px 10px',
+            }"
             @pointerdown.self="selected = form"
           >
             <FormControl v-for="(c, i) in form.controls" :key="`view${i}`" :node="view(c)" class="pointer-events-none" />

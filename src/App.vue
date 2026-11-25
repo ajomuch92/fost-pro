@@ -3,10 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { dir, openRequest, report, run, runForm } from "./engine";
+import { AppWindow, CircleQuestionMark, FilePlus, FolderOpen, Play, Save } from "@lucide/vue";
+import { dir, helpOpen, openRequest, report, run, runForm } from "./engine";
 import CommandWindow from "./components/CommandWindow.vue";
 import FormDesigner from "./components/FormDesigner.vue";
 import FormLayer from "./components/FormLayer.vue";
+import HelpScreen from "./components/HelpScreen.vue";
+import PromptDialog from "./components/PromptDialog.vue";
 import ProgramEditor from "./components/ProgramEditor.vue";
 
 /** One document is open at a time: a program in the editor, or a form in the designer. */
@@ -116,7 +119,9 @@ function shortcut(e: KeyboardEvent) {
   const action =
     e.key === "F5"
       ? runDoc
-      : (e.ctrlKey || e.metaKey) && e.key === "s"
+      : e.key === "F1"
+        ? () => (helpOpen.value = !helpOpen.value)
+        : (e.ctrlKey || e.metaKey) && e.key === "s"
         ? saveFile
         : (e.ctrlKey || e.metaKey) && e.key === "o"
           ? openFile
@@ -139,17 +144,18 @@ onBeforeUnmount(() => {
   stopCloseGuard();
 });
 
-const button = "rounded px-2 py-1 hover:bg-neutral-200 dark:hover:bg-neutral-700";
+const button = "flex items-center gap-1.5 rounded px-2 py-1 hover:bg-neutral-200 dark:hover:bg-neutral-700";
 </script>
 
 <template>
   <main class="flex h-screen flex-col bg-white text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
     <header class="flex items-center gap-1 border-b border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700">
-      <button type="button" :class="button" @click="newDoc('program')">Nuevo programa</button>
-      <button type="button" :class="button" @click="newDoc('form')">Nuevo formulario</button>
-      <button type="button" :class="button" title="Ctrl+O" @click="openFile">Abrir</button>
-      <button type="button" :class="button" title="Ctrl+S" @click="saveFile">Guardar</button>
-      <button type="button" :class="button" title="F5" @click="runDoc">Ejecutar (F5)</button>
+      <button type="button" :class="button" @click="newDoc('program')"><FilePlus :size="16" aria-hidden="true" />Nuevo programa</button>
+      <button type="button" :class="button" @click="newDoc('form')"><AppWindow :size="16" aria-hidden="true" />Nuevo formulario</button>
+      <button type="button" :class="button" title="Ctrl+O" @click="openFile"><FolderOpen :size="16" aria-hidden="true" />Abrir</button>
+      <button type="button" :class="button" title="Ctrl+S" @click="saveFile"><Save :size="16" aria-hidden="true" />Guardar</button>
+      <button type="button" :class="button" title="F5" @click="runDoc"><Play :size="16" aria-hidden="true" />Ejecutar (F5)</button>
+      <button type="button" :class="button" title="F1" @click="helpOpen = !helpOpen"><CircleQuestionMark :size="16" aria-hidden="true" />Ayuda (F1)</button>
       <span class="ml-auto text-neutral-500">{{ name }}{{ dirty ? " (sin guardar)" : "" }}</span>
     </header>
     <div class="relative flex min-h-0 flex-1 flex-col">
@@ -157,6 +163,8 @@ const button = "rounded px-2 py-1 hover:bg-neutral-200 dark:hover:bg-neutral-700
       <FormDesigner v-show="kind === 'form'" ref="designer" class="min-h-0 flex-1" @change="dirty = true" />
       <CommandWindow class="h-1/3 border-t border-neutral-300 dark:border-neutral-700" />
       <FormLayer />
+      <HelpScreen />
+      <PromptDialog />
     </div>
   </main>
 </template>
