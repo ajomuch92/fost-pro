@@ -34,11 +34,16 @@ formularios. No hay base de datos todavía.
 - **Semántica de FoxPro:** variables privadas visibles en las rutinas llamadas, paso por referencia,
   comparación de cadenas con `=` según `SET EXACT`, y 73 funciones integradas.
 - **Objetos:** clases con herencia, `ADD OBJECT`, `THIS`, `THISFORM`, `DODEFAULT()`.
-- **Formularios:** `Form`, `Label`, `TextBox`, `EditBox`, `CommandButton`, `CheckBox`, `ComboBox` y
-  `ListBox`, con los eventos `Load`, `Init`, `Click`, `InteractiveChange`, `GotFocus`, `LostFocus` y
-  `Destroy`. `MESSAGEBOX()` e `INPUTBOX()` para dialogar con el usuario.
+- **Formularios:** 19 controles, con los eventos `Load`, `Init`, `Click`, `InteractiveChange`, `GotFocus`,
+  `LostFocus`, `Timer`, `Activate` y `Destroy`. `MESSAGEBOX()` e `INPUTBOX()` para dialogar con el usuario.
+  - Texto y entrada: `Label`, `TextBox`, `EditBox`, `Spinner`, `CheckBox`, `ComboBox`, `ListBox`.
+  - Botones y grupos: `CommandButton`, `CommandGroup`, `OptionGroup` con sus `OptionButton`.
+  - Dibujo: `Image`, `Line`, `Shape`.
+  - Contenedores: `Container`, y `PageFrame` con sus `Page` (pestañas). Se pueden anidar.
+  - Otros: `Timer`, y `HyperLink`, que se dibuja como un enlace y abre su `Url` en el navegador.
 - **IDE:** editor con resaltado, diseñador de formularios (arrastrar, redimensionar, propiedades, código
-  por evento), ventana de comandos con historial, y `MODIFY COMMAND`, `MODIFY FORM` y `CREATE FORM`.
+  por evento, controles dentro de contenedores y pestañas), ventana de comandos con historial, y
+  `MODIFY COMMAND`, `MODIFY FORM` y `CREATE FORM`.
 
 La lista completa de comandos, funciones, clases y propiedades está en la ayuda de la aplicación.
 
@@ -55,6 +60,10 @@ La lista completa de comandos, funciones, clases y propiedades está en la ayuda
 - Los controles solo tienen las propiedades básicas: posición, tamaño, texto, colores y fuente. Asignar
   una que no existe da error.
 - Sin base de datos no hay `ControlSource` hacia tablas ni `Grid`.
+- `HyperLink` es un control visible, no el objeto invisible de FoxPro; `NavigateTo()` sí funciona igual.
+- En el diseñador, un control no se puede arrastrar de un contenedor a otro: hay que borrarlo y crearlo
+  de nuevo. Las páginas de un `PageFrame` se eligen en la lista de objetos, no haciendo clic en la pestaña.
+- Faltan `Grid`, `Collection`, los menús (`DEFINE MENU`) y los controles ActiveX, que no se podrán portar.
 
 ## Cómo ejecutarlo
 

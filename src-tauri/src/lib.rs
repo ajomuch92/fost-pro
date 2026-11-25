@@ -3,6 +3,7 @@ use serde_json::Value as Json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use tauri::{Emitter, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
 
 /// What the UI gets back from every request to the interpreter.
@@ -103,6 +104,13 @@ fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("No se pudo abrir {path}: {e}"))
 }
 
+/// The bytes of a picture an Image control shows. A relative path is looked up in `dir`.
+#[tauri::command]
+fn read_binary(path: String, dir: Option<String>) -> Result<tauri::ipc::Response, String> {
+    let full = std::path::Path::new(dir.as_deref().unwrap_or(".")).join(&path);
+    std::fs::read(full).map(tauri::ipc::Response::new).map_err(|e| format!("No se pudo abrir {path}: {e}"))
+}
+
 #[tauri::command]
 fn write_file(path: String, text: String) -> Result<(), String> {
     std::fs::write(&path, text).map_err(|e| format!("No se pudo guardar {path}: {e}"))
@@ -139,6 +147,12 @@ impl Host for Dialogs {
             _ if yes_no => 7,
             _ => 2,
         })
+    }
+
+    fn open_url(&mut self, url: &str) -> bool {
+        // a failure to launch the browser is not the program's error to handle
+        let _ = self.app.opener().open_url(url, None::<&str>);
+        true
     }
 
     /// INPUTBOX(): the UI draws the question and answers through `answer_prompt`.
@@ -202,7 +216,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            run_code, run_form, ui_event, stop_code, answer_prompt, class_info, reference, read_file, write_file
+            run_code, run_form, ui_event, stop_code, answer_prompt, class_info, reference, read_file, read_binary, write_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

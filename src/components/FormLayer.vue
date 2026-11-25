@@ -2,17 +2,18 @@
 // The forms a program has shown, floating over the IDE.
 import { nextTick, ref, watch } from "vue";
 import { Copy, Minus, Square, X } from "@lucide/vue";
-import { focus, forms, uiEvent, type FormNode } from "../engine";
+import { type DrawNode, focus, forms, uiEvent, type FormNode } from "../engine";
 import FormControl, { colorCss } from "./FormControl.vue";
 
 const layer = ref<HTMLElement>();
 
-function act(node: FormNode, props: Record<string, unknown> | null, events: string[]) {
-  const handled = events.filter((e) => node.events.includes(e.toUpperCase()));
+/** A control, at any depth, reports what the user did to it. */
+function act(node: DrawNode, props: Record<string, unknown> | null, events: string[]) {
+  const handled = events.filter((e) => node.events!.includes(e.toUpperCase()));
   if (!props && !handled.length) return;
   // the changed values travel with the first event, so its handler already sees them
-  uiEvent(node.id, props ?? {}, handled[0] ?? null);
-  for (const event of handled.slice(1)) uiEvent(node.id, {}, event);
+  uiEvent(node.id!, props ?? {}, handled[0] ?? null);
+  for (const event of handled.slice(1)) uiEvent(node.id!, {}, event);
 }
 
 // WindowState, as in FoxPro: 0 normal, 1 minimized, 2 maximized
@@ -55,9 +56,13 @@ watch(focus, async (id) => {
     <section
       v-for="form in forms"
       :key="form.id"
-      class="pointer-events-auto absolute border border-neutral-600 shadow-xl"
+      class="pointer-events-auto absolute overflow-hidden border border-neutral-600 shadow-xl"
       :class="{ 'inset-0 flex flex-col': form.props.WINDOWSTATE === MAXIMIZED }"
-      :style="form.props.WINDOWSTATE === MAXIMIZED ? {} : { left: `${form.props.LEFT}px`, top: `${form.props.TOP}px` }"
+      :style="
+        form.props.WINDOWSTATE === MAXIMIZED
+          ? {}
+          : { left: `${form.props.LEFT}px`, top: `${form.props.TOP}px`, borderRadius: `${form.props.BORDERRADIUS}px` }
+      "
       role="dialog"
       :aria-label="form.props.CAPTION"
     >
@@ -112,7 +117,7 @@ watch(focus, async (id) => {
           :key="c.id"
           :node="c"
           :data-fost-id="c.id"
-          @act="(props, events) => act(c, props, events)"
+          @act="act"
         />
       </div>
     </section>

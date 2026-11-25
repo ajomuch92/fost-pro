@@ -1,21 +1,33 @@
 <script setup lang="ts">
 // Visual editor for a form file: a tree of { class, props, methods, controls }, saved as JSON.
 // Only the properties that differ from the class defaults are kept, so files stay small.
-import { type Component, nextTick, ref, watch } from "vue";
+import { type Component, computed, nextTick, reactive, ref, watch } from "vue";
 import {
+  ChevronsUpDown,
+  Circle,
+  CircleDot,
+  Image as ImageIcon,
+  Link,
   List,
   Minus,
   NotebookText,
+  PanelTop,
+  PanelsTopLeft,
+  Rows2,
+  Shapes,
+  Slash,
   Square,
   SquareCheck,
   SquareChevronDown,
+  SquareDashed,
   SquareMousePointer,
   TextCursorInput,
+  Timer,
   Type,
   X,
 } from "@lucide/vue";
-import { classes } from "../engine";
-import FormControl, { colorCss } from "./FormControl.vue";
+import { classes, type DrawNode } from "../engine";
+import FormControl, { colorCss, pageTop } from "./FormControl.vue";
 import ProgramEditor from "./ProgramEditor.vue";
 
 type DesignNode = {
@@ -39,33 +51,80 @@ const info = (node: DesignNode) => classes.value.find((c) => c.name === node.cla
 const defaults = (node: DesignNode): Record<string, unknown> => Object.fromEntries(info(node)?.props ?? []);
 /** A property as it will be at run time: the designed value, or the default of the class. */
 const value = (node: DesignNode, key: string) => node.props[key] ?? defaults(node)[key];
-const num = (node: DesignNode, key: string) => Number(value(node, key));
+const num = (node: DesignNode, key: string) => Number(value(node, key) ?? 0);
 const px = (node: DesignNode, key: string) => `${num(node, key)}px`;
-const box = (node: DesignNode) => ({
-  left: px(node, "Left"),
-  top: px(node, "Top"),
-  width: px(node, "Width"),
-  height: px(node, "Height"),
+
+// The page of each page frame being worked on. It is the designer's own business: the form still
+// opens on the page its ActivePage property says, not on whichever was edited last.
+const front = reactive(new WeakMap<DesignNode, number>());
+const frontPage = (frame: DesignNode) => front.get(frame) ?? num(frame, "ActivePage");
+
+/** The classes that hold only one kind of control, and which. */
+const groups: Record<string, string> = { OptionGroup: "OptionButton", CommandGroup: "CommandButton", PageFrame: "Page" };
+
+/** Whether a control of class `cls` can be put directly inside `parent`. */
+function accepts(parent: DesignNode, cls: string) {
+  if (parent.class in groups) return groups[parent.class] === cls;
+  return ["Form", "Container", "Page"].includes(parent.class) && cls !== "OptionButton" && cls !== "Page";
+}
+
+/** Every node of the form, with its parent, its depth, and where its corner is on the form's surface. */
+const tree = computed(() => {
+  type Placed = { node: DesignNode; parent: DesignNode | null; depth: number; x: number; y: number; shown: boolean };
+  const out: Placed[] = [];
+  // (ox, oy) is where the parent's contents start; `shown` is false inside a page that is not the active one
+  const walk = (node: DesignNode, parent: DesignNode | null, depth: number, ox: number, oy: number, shown: boolean) => {
+    const fills = node.class === "Form" || node.class === "Page"; // these have no position of their own
+    const x = fills ? ox : ox + num(node, "Left");
+    const y = fills ? oy : oy + num(node, "Top");
+    out.push({ node, parent, depth, x, y, shown });
+    node.controls.forEach((c, i) => {
+      if (node.class === "PageFrame") walk(c, node, depth + 1, x, y + pageTop(value(node, "Caption")), shown && frontPage(node) === i + 1);
+      else walk(c, node, depth + 1, x, y, shown);
+    });
+  };
+  walk(form.value, null, 0, 0, 0, true);
+  return out;
 });
+const parentOf = (node: DesignNode) => tree.value.find((p) => p.node === node)?.parent ?? null;
+
+/** Where a new control of class `cls` goes: the selected object if it can hold it, else the nearest one around it that can. */
+function hostFor(cls: string) {
+  for (let n: DesignNode | null = selected.value; n; n = parentOf(n)) if (accepts(n, cls)) return n;
+  return null;
+}
 
 /** The node as FormControl draws it: every property, upper-cased like the interpreter's. */
-function view(node: DesignNode) {
+function view(node: DesignNode): DrawNode {
   const all = { ...defaults(node), ...node.props };
   const props = Object.fromEntries(Object.entries(all).map(([k, v]) => [k.toUpperCase(), v]));
+  if (node.class === "PageFrame") props.ACTIVEPAGE = frontPage(node);
   const list = all.RowSourceType === 1 ? String(all.RowSource).split(",") : [];
-  return { base: node.class.toUpperCase(), props, items: list.map((s) => s.trim()).filter(Boolean) };
+  return {
+    base: node.class.toUpperCase(),
+    props,
+    items: list.map((s) => s.trim()).filter(Boolean),
+    children: node.controls.map(view),
+  };
+}
+
+/** Stores a property, or drops it when it is back at the class default. */
+function put(node: DesignNode, key: string, v: unknown) {
+  if (v === defaults(node)[key]) delete node.props[key];
+  else node.props[key] = v;
 }
 
 function set(node: DesignNode, key: string, v: unknown) {
-  if (v === defaults(node)[key]) delete node.props[key];
-  else node.props[key] = v;
+  put(node, key, v);
+  // changing the property itself is also a wish to see that page
+  if (key === "ActivePage") front.delete(node);
   emit("change");
 }
 
 function rename(node: DesignNode, name: string) {
-  const taken = [form.value, ...form.value.controls].some(
-    (n) => n !== node && String(n.props.Name).toUpperCase() === name.toUpperCase(),
-  );
+  // names only need to be unique among the controls of the same container
+  const siblings = parentOf(node)?.controls ?? [];
+  const taken = siblings.some((n) => n !== node && String(n.props.Name).toUpperCase() === name.toUpperCase());
   nameError.value = !/^[A-Za-z_]\w*$/.test(name)
     ? "Usa letras, números y guion bajo, sin empezar por un número."
     : taken
@@ -80,10 +139,22 @@ const icons: Record<string, Component> = {
   Label: Type,
   TextBox: TextCursorInput,
   EditBox: NotebookText,
+  Spinner: ChevronsUpDown,
   CommandButton: SquareMousePointer,
   CheckBox: SquareCheck,
   ComboBox: SquareChevronDown,
   ListBox: List,
+  OptionGroup: CircleDot,
+  OptionButton: Circle,
+  CommandGroup: Rows2,
+  HyperLink: Link,
+  Image: ImageIcon,
+  Line: Slash,
+  Shape: Shapes,
+  Timer,
+  Container: SquareDashed,
+  PageFrame: PanelsTopLeft,
+  Page: PanelTop,
 };
 
 // FoxPro's own names for new controls: Text1, Command1...
@@ -94,33 +165,45 @@ const prefixes: Record<string, string> = {
   CheckBox: "Check",
   ComboBox: "Combo",
   ListBox: "List",
+  OptionButton: "Option",
 };
 
-function add(cls: string) {
+function add(cls: string, into = hostFor(cls)) {
+  if (!into) return;
   const prefix = prefixes[cls] ?? cls;
-  const names = form.value.controls.map((c) => c.props.Name);
+  const names = into.controls.map((c) => c.props.Name);
   let n = 1;
   while (names.includes(prefix + n)) n++;
-  // each new control lands under the lowest one, so they do not pile up
-  const top = Math.max(0, ...form.value.controls.map((c) => num(c, "Top") + num(c, "Height"))) + 10;
-  const node: DesignNode = { class: cls, props: { Name: prefix + n, Left: 10, Top: top }, methods: {}, controls: [] };
-  if ("Caption" in defaults(node)) node.props.Caption = prefix + n;
-  form.value.controls.push(node);
-  selected.value = form.value.controls[form.value.controls.length - 1];
+  const node: DesignNode = { class: cls, props: { Name: prefix + n }, methods: {}, controls: [] };
+  // a page frame's caption is an optional title, so it starts without one
+  if ("Caption" in defaults(node) && cls !== "PageFrame") node.props.Caption = prefix + n;
+  if ("Top" in defaults(node)) {
+    // each new control lands under the lowest one, so they do not pile up
+    const margin = into.class in groups ? 5 : 10;
+    node.props.Left = margin;
+    node.props.Top = Math.max(0, ...into.controls.map((c) => num(c, "Top") + num(c, "Height"))) + margin;
+  }
+  into.controls.push(node);
+  const made = into.controls[into.controls.length - 1];
+  // as in FoxPro, a group or page frame starts with two members
+  if (cls in groups) for (let i = 0; i < 2; i++) add(groups[cls], made);
+  selected.value = made;
   emit("change");
 }
 
 function remove() {
-  if (selected.value === form.value) return;
-  form.value.controls = form.value.controls.filter((c) => c !== selected.value);
-  selected.value = form.value;
+  const parent = parentOf(selected.value);
+  if (!parent) return;
+  parent.controls = parent.controls.filter((c) => c !== selected.value);
+  selected.value = parent;
   emit("change");
 }
 
 function startDrag(node: DesignNode, down: PointerEvent, mode: "move" | "size") {
   selected.value = node;
   const [a, b] = mode === "move" ? ["Left", "Top"] : ["Width", "Height"];
-  const min = mode === "move" ? 0 : 8;
+  // a Line may be flat; anything else stays big enough to grab
+  const min = mode === "move" || node.class === "Line" ? 0 : 8;
   const from = { x: down.clientX, y: down.clientY, a: num(node, a), b: num(node, b) };
   const move = (e: PointerEvent) => {
     set(node, a, Math.max(min, Math.round(from.a + e.clientX - from.x)));
@@ -143,9 +226,8 @@ function keyed(node: DesignNode, e: KeyboardEvent) {
   if (!step) return;
   e.preventDefault();
   const [a, b] = e.shiftKey ? ["Width", "Height"] : ["Left", "Top"];
-  const min = e.shiftKey ? 8 : 0;
-  set(node, a, Math.max(min, num(node, a) + step[0]));
-  set(node, b, Math.max(min, num(node, b) + step[1]));
+  set(node, a, Math.max(0, num(node, a) + step[0]));
+  set(node, b, Math.max(0, num(node, b) + step[1]));
 }
 
 /** The events of the selected object's class, plus any other method the file already has. */
@@ -159,6 +241,13 @@ watch([selected, event], async () => {
   loading = true;
   code.value?.setText(selected.value.methods[event.value] ?? "");
   loading = false;
+});
+
+// Selecting something on a page brings that page to the front, so it can be seen and edited.
+watch(selected, (node) => {
+  for (let child = node, parent = parentOf(child); parent; child = parent, parent = parentOf(parent)) {
+    if (parent.class === "PageFrame") front.set(parent, parent.controls.indexOf(child) + 1);
+  }
 });
 
 function edited() {
@@ -176,12 +265,17 @@ const fromHex = (h: string) =>
 const typed = (e: Event) => (e.target as HTMLInputElement).value;
 const ticked = (e: Event) => (e.target as HTMLInputElement).checked;
 
-/** Fills in what a hand-written file may leave out, and rejects classes the designer cannot draw. */
+/** Fills in what a hand-written file may leave out, and rejects what the designer cannot draw. */
 function normalize(node: Partial<DesignNode>, fallback: string): DesignNode {
   const cls = classes.value.find((c) => c.name.toUpperCase() === (node.class ?? fallback).toUpperCase());
   if (!cls || cls.name === "Custom") throw new Error(`El diseñador no conoce la clase ${node.class}`);
-  const controls = (node.controls ?? []).map((c) => normalize(c, "Label"));
-  return { class: cls.name, props: { Name: cls.name, ...node.props }, methods: { ...node.methods }, controls };
+  const made: DesignNode = { class: cls.name, props: { Name: cls.name, ...node.props }, methods: { ...node.methods }, controls: [] };
+  for (const c of node.controls ?? []) {
+    const child = normalize(c, "Label");
+    if (!accepts(made, child.class)) throw new Error(`Un ${made.class} no puede contener un ${child.class}`);
+    made.controls.push(child);
+  }
+  return made;
 }
 
 defineExpose({
@@ -200,18 +294,20 @@ defineExpose({
 
 const field = "min-w-0 rounded border border-neutral-400 bg-transparent px-1";
 const tool =
-  "flex items-center gap-2 rounded border border-neutral-400 px-2 py-1 text-left hover:bg-neutral-200 dark:hover:bg-neutral-700";
+  "flex items-center gap-2 rounded border border-neutral-400 px-2 py-1 text-left hover:bg-neutral-200 disabled:opacity-40 dark:hover:bg-neutral-700";
 const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-600";
 </script>
 
 <template>
-  <div class="grid h-full min-h-0 grid-cols-[11rem_1fr_17rem] text-sm">
+  <div class="grid h-full min-h-0 grid-cols-[12rem_1fr_17rem] text-sm">
     <nav class="flex flex-col gap-1 overflow-y-auto border-r border-neutral-300 p-2 dark:border-neutral-700" aria-label="Agregar control">
       <button
         v-for="c in classes.filter((c) => c.name !== 'Custom' && c.name !== 'Form')"
         :key="c.name"
         type="button"
         :class="tool"
+        :disabled="!hostFor(c.name)"
+        :title="hostFor(c.name) ? `Agregar a ${hostFor(c.name)!.props.Name}` : 'Selecciona antes el grupo o el marco de páginas que lo contendrá'"
         @click="add(c.name)"
       >
         <component :is="icons[c.name]" :size="16" class="shrink-0" aria-hidden="true" />
@@ -221,8 +317,17 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
 
     <div class="flex min-h-0 min-w-0 flex-col">
       <div class="min-h-0 flex-1 overflow-auto bg-neutral-300 p-4 select-none dark:bg-neutral-800" @pointerdown.self="selected = form">
-        <div class="inline-block border border-neutral-600 shadow-lg" :class="{ 'outline-2 outline-blue-500': selected === form }">
-          <div class="flex items-center gap-2 bg-blue-700 px-2 py-1 text-white" @pointerdown="selected = form">
+        <!-- the corners are rounded piece by piece: clipping the whole window would cut off the resize handle -->
+        <div
+          class="inline-block border border-neutral-600 shadow-lg"
+          :class="{ 'outline-2 outline-blue-500': selected === form }"
+          :style="{ borderRadius: px(form, 'BorderRadius') }"
+        >
+          <div
+            class="flex items-center gap-2 bg-blue-700 px-2 py-1 text-white"
+            :style="{ borderRadius: `${px(form, 'BorderRadius')} ${px(form, 'BorderRadius')} 0 0` }"
+            @pointerdown="selected = form"
+          >
             <span class="flex-1 truncate">{{ value(form, "Caption") }}</span>
             <Minus v-if="value(form, 'MinButton')" :size="14" aria-hidden="true" />
             <Square v-if="value(form, 'MaxButton')" :size="12" aria-hidden="true" />
@@ -237,25 +342,26 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
               // the design grid: a dot every 10 pixels
               backgroundImage: 'radial-gradient(circle, rgb(0 0 0 / 0.4) 1px, transparent 1px)',
               backgroundSize: '10px 10px',
+              borderRadius: `0 0 ${px(form, 'BorderRadius')} ${px(form, 'BorderRadius')}`,
             }"
             @pointerdown.self="selected = form"
           >
-            <FormControl v-for="(c, i) in form.controls" :key="`view${i}`" :node="view(c)" class="pointer-events-none" />
-            <!-- a transparent grip over each control takes the pointer and the keyboard -->
+            <FormControl v-for="(c, i) in form.controls" :key="`view${i}`" :node="view(c)" design class="pointer-events-none" />
+            <!-- a transparent grip over each control takes the pointer and the keyboard; inner controls come later, so on top -->
             <div
-              v-for="(c, i) in form.controls"
+              v-for="(p, i) in tree.filter((p) => p.shown && p.parent && p.node.class !== 'Page')"
               :key="`grip${i}`"
-              class="absolute cursor-move"
-              :class="{ 'outline-2 outline-blue-500': selected === c }"
-              :style="box(c)"
+              class="absolute min-h-1.5 min-w-1.5 cursor-move"
+              :class="{ 'outline-2 outline-blue-500': selected === p.node }"
+              :style="{ left: `${p.x}px`, top: `${p.y}px`, width: px(p.node, 'Width'), height: px(p.node, 'Height') }"
               tabindex="0"
               role="button"
-              :aria-label="`${c.props.Name}: flechas para mover, Mayús+flechas para cambiar el tamaño, Supr para eliminar`"
-              @pointerdown.stop="startDrag(c, $event, 'move')"
-              @focus="selected = c"
-              @keydown="keyed(c, $event)"
+              :aria-label="`${p.node.props.Name}: flechas para mover, Mayús+flechas para cambiar el tamaño, Supr para eliminar`"
+              @pointerdown.stop="startDrag(p.node, $event, 'move')"
+              @focus="selected = p.node"
+              @keydown="keyed(p.node, $event)"
             >
-              <span v-if="selected === c" :class="handle" @pointerdown.stop="startDrag(c, $event, 'size')" />
+              <span v-if="selected === p.node" :class="handle" @pointerdown.stop="startDrag(p.node, $event, 'size')" />
             </div>
             <span :class="handle" title="Cambiar el tamaño del formulario" @pointerdown.stop="startDrag(form, $event, 'size')" />
           </div>
@@ -275,11 +381,11 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
 
     <aside class="flex min-h-0 flex-col border-l border-neutral-300 dark:border-neutral-700" aria-label="Propiedades">
       <div class="flex items-center gap-1 border-b border-neutral-300 p-2 dark:border-neutral-700">
+        <!-- every object of the form, indented by depth: the way to reach pages and what a container hides -->
         <select v-model="selected" class="flex-1" :class="field" aria-label="Objeto seleccionado">
-          <option :value="form">{{ form.props.Name }}</option>
-          <option v-for="(c, i) in form.controls" :key="i" :value="c">{{ c.props.Name }}</option>
+          <option v-for="(p, i) in tree" :key="i" :value="p.node">{{ "  ".repeat(p.depth) }}{{ p.node.props.Name }}</option>
         </select>
-        <button type="button" :class="tool" class="disabled:opacity-40" :disabled="selected === form" @click="remove">Eliminar</button>
+        <button type="button" :class="tool" :disabled="selected === form" @click="remove">Eliminar</button>
       </div>
       <div class="overflow-y-auto p-2">
         <label class="grid grid-cols-2 items-center gap-1 py-0.5">
