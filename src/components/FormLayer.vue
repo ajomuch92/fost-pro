@@ -26,16 +26,26 @@ function setState(form: FormNode, state: number) {
   uiEvent(form.id, { WindowState: form.props.WINDOWSTATE }, null);
 }
 
+/** The form being dragged and where. It is kept apart from the form's own properties because every
+ * answer from the interpreter, such as a Timer's tick, replaces those with what it knew before the drag. */
+const moving = ref<{ id: number; left: number; top: number } | null>(null);
+const place = (form: FormNode) =>
+  moving.value?.id === form.id ? moving.value : { left: form.props.LEFT, top: form.props.TOP };
+
 function drag(form: FormNode, down: PointerEvent) {
   if (form.props.WINDOWSTATE === MAXIMIZED) return;
+  const { id } = form;
   const from = { x: down.clientX - form.props.LEFT, y: down.clientY - form.props.TOP };
+  moving.value = { id, left: form.props.LEFT, top: form.props.TOP };
   const move = (e: PointerEvent) => {
-    form.props.LEFT = Math.max(0, e.clientX - from.x);
-    form.props.TOP = Math.max(0, e.clientY - from.y);
+    moving.value = { id, left: Math.max(0, e.clientX - from.x), top: Math.max(0, e.clientY - from.y) };
   };
-  const up = () => {
+  const up = async () => {
     removeEventListener("pointermove", move);
-    uiEvent(form.id, { Left: form.props.LEFT, Top: form.props.TOP }, null);
+    const { left, top } = moving.value!;
+    // released only once the interpreter knows the new place, so the form does not jump back meanwhile
+    await uiEvent(id, { Left: left, Top: top }, null);
+    if (moving.value?.id === id) moving.value = null;
   };
   addEventListener("pointermove", move);
   addEventListener("pointerup", up, { once: true });
@@ -61,7 +71,7 @@ watch(focus, async (id) => {
       :style="
         form.props.WINDOWSTATE === MAXIMIZED
           ? {}
-          : { left: `${form.props.LEFT}px`, top: `${form.props.TOP}px`, borderRadius: `${form.props.BORDERRADIUS}px` }
+          : { left: `${place(form).left}px`, top: `${place(form).top}px`, borderRadius: `${form.props.BORDERRADIUS}px` }
       "
       role="dialog"
       :aria-label="form.props.CAPTION"
