@@ -184,6 +184,9 @@ const MEMBERS: &[(&str, &str)] = &[
     ("objeto.AddObject(nombre, clase)", "Agrega un control en ejecución. Nace oculto: ponga Visible = .T."),
     ("objeto.RemoveObject(nombre)", "Elimina un control."),
     ("objeto.AddProperty(nombre [, valor])", "Agrega una propiedad."),
+    ("control.ControlSource", "El campo (cliente.nombre) o la variable que el control muestra y en la que guarda lo que el usuario escribe. Lo tienen TextBox, EditBox, Spinner, CheckBox, ComboBox, ListBox y OptionGroup."),
+    ("objeto.Refresh()", "Vuelve a cargar los controles enlazados con el valor de su ControlSource."),
+    ("grid.RecordSource", "El alias de la tabla que muestra un Grid; vacío, la del área actual. Un clic en una fila la hace el registro actual y ejecuta AfterRowColChange."),
     ("lista.AddItem(texto) / RemoveItem(n) / Clear()", "Cambia las opciones de un ComboBox o ListBox."),
     ("lista.List(n) / ListCount / ListIndex", "Una opción, cuántas hay, y cuál está elegida."),
 ];

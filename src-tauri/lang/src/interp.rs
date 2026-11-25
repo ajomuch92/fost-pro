@@ -168,7 +168,7 @@ impl Interp {
         self.frames.last_mut().unwrap()
     }
 
-    fn lookup(&self, name: &str) -> Option<VarRef> {
+    pub(crate) fn lookup(&self, name: &str) -> Option<VarRef> {
         let top = self.frames.len() - 1;
         for (depth, f) in self.frames.iter().enumerate().rev() {
             if let Some((v, local)) = f.vars.get(name) {
@@ -517,6 +517,12 @@ impl Interp {
         match obj.0.borrow_mut().props.get_mut(name) {
             Some(slot) => Self::store(slot, v),
             None => return Err(err(format!("Propiedad no encontrada: {name}"))),
+        }
+        match name {
+            "VALUE" => self.push_bound(obj)?,
+            // a new source is loaded before anything is written to it
+            "CONTROLSOURCE" => obj.0.borrow_mut().seen = None,
+            _ => {}
         }
         Ok(())
     }

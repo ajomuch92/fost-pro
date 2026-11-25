@@ -13,6 +13,8 @@ export type FormNode = {
   /** Upper-cased names of the events somebody handles: only those need reporting. */
   events: string[];
   children: FormNode[];
+  /** For a Grid: the table it shows, and the number of its current record. */
+  grid?: { fields: string[]; rows: { recno: number; cells: unknown[] }[]; recno: number | null };
 };
 /** What it takes to draw a control: a node of a running form, or one the designer is laying out. */
 export type DrawNode = Pick<FormNode, "base" | "props"> &

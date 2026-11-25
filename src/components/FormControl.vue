@@ -143,6 +143,8 @@ onBeforeUnmount(() => {
 });
 
 const base = computed(() => props.node.base);
+/** A value of a table, as a Grid shows it. */
+const cellText = (v: unknown) => (v === true ? ".T." : v === false ? ".F." : String(v ?? ""));
 </script>
 
 <template>
@@ -268,6 +270,35 @@ const base = computed(() => props.node.base);
     :style="{ ...box, backgroundColor: fill, boxShadow: border, borderRadius: `${p.CURVATURE / 2}%` }"
     @click="act(null, ['Click'])"
   />
+  <div
+    v-else-if="base === 'GRID'"
+    class="absolute overflow-auto border border-neutral-500 text-xs"
+    :style="style"
+    :title="tip"
+  >
+    <table class="w-full border-collapse" :aria-label="p.NAME">
+      <thead class="sticky top-0 bg-neutral-200 text-black">
+        <tr>
+          <!-- with no table yet, as while designing, one empty heading says what this is -->
+          <th v-for="f in node.grid?.fields.length ? node.grid.fields : ['Grid']" :key="f" class="border border-neutral-400 px-1 text-left">
+            {{ f }}
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          v-for="row in node.grid?.rows"
+          :key="row.recno"
+          class="cursor-default"
+          :class="row.recno === node.grid!.recno ? 'bg-blue-600 text-white' : 'hover:bg-neutral-100'"
+          :aria-selected="row.recno === node.grid!.recno"
+          @click="act({ RecNo: row.recno }, ['AfterRowColChange'])"
+        >
+          <td v-for="(cell, i) in row.cells" :key="i" class="border border-neutral-300 px-1 whitespace-nowrap">{{ cellText(cell) }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
   <!-- a Timer is not seen at run time; the designer shows where it was put -->
   <span
     v-else-if="base === 'TIMER'"

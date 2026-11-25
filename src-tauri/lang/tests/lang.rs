@@ -436,7 +436,7 @@ ENDDEFINE
     assert_eq!(run("f = CREATEOBJECT('Form')\nf.PageCount = 2").split('!').nth(1), Some("Línea 2: PageCount y ButtonCount necesitan un número, en un PageFrame o un grupo"));
     // every built-in class can be created, and the designer is told about all of them
     let classes = fost_lang::class_info();
-    assert_eq!(classes.as_array().unwrap().len(), 21);
+    assert_eq!(classes.as_array().unwrap().len(), 22);
     for class in classes.as_array().unwrap() {
         assert_eq!(run(&format!("o = CREATEOBJECT('{}')\n? o.BaseClass", class["name"].as_str().unwrap())), class["name"].as_str().unwrap());
     }
@@ -734,4 +734,66 @@ ENDPROC
     assert_eq!(it.run("DEFINE BAR 1 OF p PROMPT 'x' BEFORE y").unwrap_err().msg, "Cláusula no soportada en DEFINE PAD o DEFINE BAR");
     // classes still work next to menu definitions
     assert_eq!(run("DEFINE MENU m\no = CREATEOBJECT('C')\n? o.n\nDEFINE CLASS C AS Custom\nn = 5\nENDDEFINE"), "5");
+}
+
+#[test]
+fn forms_bound_to_data() {
+    use serde_json::json;
+    let mut it = Interp::default();
+    it.run(PEOPLE).unwrap();
+    it.run("GO TOP\nPUBLIC titulo\ntitulo = 'hola'").unwrap();
+    let control = |class: &str, name: &str, source: &str| json!({ "class": class, "props": { "Name": name, "ControlSource": source } });
+    let form = json!({ "controls": [
+        control("TextBox", "txtNombre", "gente.nombre"),
+        control("TextBox", "txtEdad", "edad"),
+        control("CheckBox", "chkActivo", "activo"),
+        control("TextBox", "txtAlta", "alta"),
+        control("TextBox", "txtTitulo", "titulo"),
+        control("TextBox", "txtNada", "no.existe"),
+        { "class": "Grid", "props": { "Name": "grd", "RecordSource": "gente" } },
+        { "class": "CommandButton", "props": { "Name": "cmd" }, "methods": {
+            "Click": "SKIP\n? THISFORM.txtNombre.Value\nTHISFORM.Refresh()\n? THISFORM.txtNombre.Value\nTHISFORM.txtEdad.Value = 26" } },
+    ] });
+    it.run_form(&form.to_string(), "datos").unwrap();
+    let forms = it.forms_json();
+    let kids = forms[0]["children"].as_array().unwrap();
+    let value = |forms: &serde_json::Value, i: usize| forms[0]["children"][i]["props"]["VALUE"].clone();
+    let id = |i: usize| kids[i]["id"].as_u64().unwrap();
+    // each control shows its field of the current record; text comes without its padding
+    assert_eq!((0..6).map(|i| value(&forms, i)).collect::<Vec<_>>(), [json!("Carla"), json!(30.0), json!(true), json!("03/01/2024"), json!("hola"), json!("")]);
+    assert_eq!(kids[6]["grid"]["fields"], json!(["NOMBRE", "EDAD", "ACTIVO", "ALTA", "NOTA"]));
+    assert_eq!(kids[6]["grid"]["rows"][1], json!({ "recno": 2, "cells": ["Ana", 25.0, false, "  /  /    ", ""] }));
+    assert_eq!(kids[6]["grid"]["recno"], 1);
+
+    // what the user enters goes to the field, converted to its type
+    it.ui_event(id(0), &json!({ "Value": "Carlota" }), None).unwrap();
+    it.ui_event(id(1), &json!({ "Value": 31 }), None).unwrap();
+    it.ui_event(id(2), &json!({ "Value": false }), None).unwrap();
+    it.ui_event(id(4), &json!({ "Value": "chao" }), None).unwrap();
+    // half a date is not stored, and does not wipe what is being typed
+    it.ui_event(id(3), &json!({ "Value": "04/1" }), None).unwrap();
+    assert_eq!(value(&it.forms_json(), 3), "04/1");
+    it.run("? nombre + '|', edad, activo, alta, titulo").unwrap();
+    assert_eq!(it.take_output(), "\nCarlota | 31 .F. 03/01/2024 chao");
+    it.ui_event(id(3), &json!({ "Value": "04/15/2024" }), None).unwrap();
+    it.run("? alta").unwrap();
+    assert_eq!(it.take_output(), "\n04/15/2024");
+
+    // a click on a row of the grid moves the record pointer, and the controls follow
+    it.ui_event(id(6), &json!({ "RecNo": 3 }), Some("AfterRowColChange")).unwrap();
+    let forms = it.forms_json();
+    assert_eq!((value(&forms, 0), value(&forms, 1), forms[0]["children"][6]["grid"]["recno"].clone()), (json!("Beto"), json!(41.0), json!(3)));
+
+    // inside a method the control keeps its value until Refresh; assigning Value writes the field
+    it.ui_event(id(7), &serde_json::Value::Null, Some("Click")).unwrap();
+    assert_eq!(it.take_output(), "\nBeto\nDora");
+    it.run("? edad\nGO 2").unwrap();
+    assert_eq!(it.take_output(), "\n26");
+    assert_eq!(value(&it.forms_json(), 0), "Ana");
+
+    // with the table closed the controls keep what they had, and typing is not an error
+    it.run("USE").unwrap();
+    it.ui_event(id(0), &json!({ "Value": "x" }), None).unwrap();
+    let forms = it.forms_json();
+    assert_eq!((value(&forms, 0), forms[0]["children"][6]["grid"]["rows"].clone()), (json!("x"), json!([])));
 }

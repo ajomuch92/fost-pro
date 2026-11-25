@@ -41,6 +41,9 @@ pub struct Object {
     pub methods: HashMap<String, (Rc<Routine>, Option<String>)>,
     /// What AddItem added to a ComboBox or ListBox.
     pub items: Vec<String>,
+    /// For a control with a ControlSource: the source's value when the control last loaded it.
+    /// None until it loads, and a control that has not loaded does not write to its source.
+    pub seen: Option<Value>,
 }
 
 impl Object {
@@ -110,7 +113,7 @@ fn visual(width: f64, height: f64, own: Props) -> Props {
 /// The built-in classes, in the order a designer's toolbox shows them.
 pub const BASES: &[&str] = &[
     "CUSTOM", "FORM", "LABEL", "TEXTBOX", "EDITBOX", "SPINNER", "COMMANDBUTTON", "CHECKBOX", "COMBOBOX", "LISTBOX",
-    "OPTIONGROUP", "OPTIONBUTTON", "COMMANDGROUP", "HYPERLINK", "IMAGE", "LINE", "SHAPE", "TIMER", "CONTAINER",
+    "OPTIONGROUP", "OPTIONBUTTON", "COMMANDGROUP", "HYPERLINK", "IMAGE", "LINE", "SHAPE", "TIMER", "GRID", "CONTAINER",
     "PAGEFRAME", "PAGE",
 ];
 
@@ -128,7 +131,14 @@ pub fn base(key: &str) -> Option<Base> {
     use Value::*;
     let s = |text: &str| Str(text.into());
     let list = || {
-        vec![("Value", s("")), ("RowSourceType", Num(0.0)), ("RowSource", s("")), ("ListIndex", Num(0.0)), ("BackColor", Num(WHITE))]
+        vec![
+            ("Value", s("")),
+            ("ControlSource", s("")),
+            ("RowSourceType", Num(0.0)),
+            ("RowSource", s("")),
+            ("ListIndex", Num(0.0)),
+            ("BackColor", Num(WHITE)),
+        ]
     };
     // a filled box with a border; BackStyle 0 makes it transparent
     let boxed = |back: f64, border: f64| vec![("BackColor", Num(back)), ("BackStyle", Num(1.0)), ("BorderWidth", Num(1.0)), ("BorderColor", Num(border))];
@@ -165,12 +175,19 @@ pub fn base(key: &str) -> Option<Base> {
         "TEXTBOX" => (
             "TEXTBOX",
             "TextBox",
-            visual(100.0, 23.0, vec![("Value", s("")), ("ReadOnly", Bool(false)), ("PasswordChar", s("")), ("BackColor", Num(WHITE))]),
+            visual(
+                100.0,
+                23.0,
+                vec![("Value", s("")), ("ControlSource", s("")), ("ReadOnly", Bool(false)), ("PasswordChar", s("")), ("BackColor", Num(WHITE))],
+            ),
             TYPED,
         ),
-        "EDITBOX" => {
-            ("EDITBOX", "EditBox", visual(100.0, 53.0, vec![("Value", s("")), ("ReadOnly", Bool(false)), ("BackColor", Num(WHITE))]), TYPED)
-        }
+        "EDITBOX" => (
+            "EDITBOX",
+            "EditBox",
+            visual(100.0, 53.0, vec![("Value", s("")), ("ControlSource", s("")), ("ReadOnly", Bool(false)), ("BackColor", Num(WHITE))]),
+            TYPED,
+        ),
         "SPINNER" => (
             "SPINNER",
             "Spinner",
@@ -179,6 +196,7 @@ pub fn base(key: &str) -> Option<Base> {
                 24.0,
                 vec![
                     ("Value", Num(0.0)),
+                    ("ControlSource", s("")),
                     ("Increment", Num(1.0)),
                     ("SpinnerLowValue", Num(-2147483647.0)),
                     ("SpinnerHighValue", Num(2147483647.0)),
@@ -191,7 +209,7 @@ pub fn base(key: &str) -> Option<Base> {
         "CHECKBOX" => (
             "CHECKBOX",
             "CheckBox",
-            visual(60.0, 17.0, vec![("Caption", s("Check1")), ("Value", Num(0.0))]),
+            visual(60.0, 17.0, vec![("Caption", s("Check1")), ("Value", Num(0.0)), ("ControlSource", s(""))]),
             &["Init", "Click", "InteractiveChange", "Destroy"],
         ),
         "COMBOBOX" => ("COMBOBOX", "ComboBox", visual(100.0, 24.0, list()), CHOSEN),
@@ -200,7 +218,7 @@ pub fn base(key: &str) -> Option<Base> {
         "OPTIONGROUP" => (
             "OPTIONGROUP",
             "OptionGroup",
-            placed(71.0, 46.0, with(vec![("Value", Num(1.0))], boxed(GRAY, SILVER))),
+            placed(71.0, 46.0, with(vec![("Value", Num(1.0)), ("ControlSource", s(""))], boxed(GRAY, SILVER))),
             &["Init", "InteractiveChange", "Click", "Destroy"],
         ),
         "OPTIONBUTTON" => ("OPTIONBUTTON", "OptionButton", visual(61.0, 17.0, vec![("Caption", s("Option1"))]), CLICKED),
@@ -228,6 +246,13 @@ pub fn base(key: &str) -> Option<Base> {
         "SHAPE" => ("SHAPE", "Shape", placed(100.0, 60.0, with(boxed(WHITE, 0.0), vec![("Curvature", Num(0.0))])), CLICKED),
         // Interval in milliseconds; 0 stops it
         "TIMER" => ("TIMER", "Timer", placed(23.0, 23.0, vec![("Interval", Num(0.0))]), &["Init", "Timer", "Destroy"]),
+        // shows every field of the table open as RecordSource (the current one when empty); a click makes a record current
+        "GRID" => (
+            "GRID",
+            "Grid",
+            visual(320.0, 200.0, vec![("RecordSource", s("")), ("BackColor", Num(WHITE))]),
+            &["Init", "AfterRowColChange", "Destroy"],
+        ),
         "CONTAINER" => ("CONTAINER", "Container", placed(100.0, 100.0, boxed(GRAY, SILVER)), CLICKED),
         // Caption, when not empty, is a title drawn above the tabs; each tab shows its Page's own Caption
         "PAGEFRAME" => ("PAGEFRAME", "PageFrame", placed(241.0, 169.0, vec![("ActivePage", Num(1.0)), ("Caption", s(""))]), &["Init", "Destroy"]),

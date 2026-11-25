@@ -6,7 +6,8 @@
 
 use crate::interp::{Flow, Interp};
 use crate::parser::{DataCmd, Expr, FieldDef, RecScope, Stmt};
-use crate::value::{Value, compare};
+use crate::object::{ObjRef, to_json};
+use crate::value::{Value, compare, parse_date};
 use crate::{R, err};
 use chrono::NaiveDate;
 use rusqlite::Connection;
@@ -14,6 +15,7 @@ use rusqlite::types::Value as Sql;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use serde_json::{Value as Json, json};
 use std::rc::Rc;
 
 const FILE: &str = "datos.fostdb";
@@ -401,6 +403,102 @@ impl Interp {
             Some(n) => Ok(self.row(n)?.get(name).cloned()),
             None => Ok(None),
         }
+    }
+
+    /// The area of the table open as `alias`; the current area when it is empty.
+    fn alias_area(&self, alias: &str) -> Option<usize> {
+        let d = self.data.as_ref()?;
+        let alias = alias.trim().to_uppercase();
+        if alias.is_empty() {
+            return d.areas.contains_key(&d.current).then_some(d.current);
+        }
+        d.areas.iter().find(|(_, a)| a.alias == alias).map(|(n, _)| *n)
+    }
+
+    /// The area and field a ControlSource names, `field` or `alias.field`, when it is a field of an open table.
+    fn source_field(&self, source: &str) -> Option<(usize, FieldDef)> {
+        let source = source.trim().to_uppercase();
+        let (alias, field) = source.split_once('.').unwrap_or(("", &source));
+        let n = self.alias_area(alias)?;
+        let field = self.data.as_ref()?.areas[&n].fields.iter().find(|f| f.name == field)?;
+        Some((n, field.clone()))
+    }
+
+    /// What a ControlSource holds now: a field of the current record, or a variable. None when it names neither.
+    pub(crate) fn read_source(&mut self, source: &str) -> R<Option<Value>> {
+        if let Some((n, field)) = self.source_field(source) {
+            return Ok(self.row(n)?.get(&field.name).cloned());
+        }
+        let name = source.trim().to_uppercase();
+        Ok(self.lookup(name.strip_prefix("M.").unwrap_or(&name)).map(|v| v.borrow().clone()))
+    }
+
+    /// Stores what a bound control holds. Text typed for a number or a date is converted;
+    /// while it is not one yet (a date half typed) nothing is stored.
+    pub(crate) fn write_source(&mut self, source: &str, v: Value) -> R<()> {
+        let Some((n, field)) = self.source_field(source) else {
+            let name = source.trim().to_uppercase();
+            let name = name.strip_prefix("M.").unwrap_or(&name);
+            if self.lookup(name).is_some() {
+                self.set_var(name, v);
+            }
+            return Ok(());
+        };
+        let v = match (field.kind, v) {
+            ('N' | 'I', Value::Str(s)) => match s.trim().parse() {
+                Ok(n) => Value::Num(n),
+                Err(_) => return Ok(()),
+            },
+            ('D', Value::Str(s)) if s.trim_matches([' ', '/']).is_empty() => Value::Date(None),
+            ('D', Value::Str(s)) => match parse_date(&s) {
+                Some(d) => Value::Date(Some(d)),
+                None => return Ok(()),
+            },
+            // a CheckBox holds 0 or 1 until it learns its field is logical
+            ('L', Value::Num(n)) => Value::Bool(n != 0.0),
+            (_, v) => v,
+        };
+        self.replace(n, &field.name, v)
+    }
+
+    /// What a Grid shows of the table open as `alias`: its fields, its records in the current order, and which is current.
+    // shortcut: the first 1000 records are sent whole on every change; upgrade to sending the visible window when tables grow
+    pub(crate) fn grid_json(&mut self, alias: &str) -> Json {
+        let empty = json!({ "fields": [], "rows": [], "recno": null });
+        let Some(n) = self.alias_area(alias) else { return empty };
+        let Ok(keys) = self.keys(n) else { return empty };
+        let d = self.data.as_ref().unwrap();
+        let a = &d.areas[&n];
+        let columns: Vec<String> = a.fields.iter().map(|f| format!("\"{}\"", f.name)).collect();
+        let query = format!("SELECT _recno, {} FROM {}", columns.join(", "), a.sql_name());
+        let read = || -> rusqlite::Result<HashMap<i64, Vec<Json>>> {
+            let mut stmt = d.conn.prepare(&query)?;
+            let rows = stmt.query_map([], |r| {
+                let cells = a.fields.iter().enumerate().map(|(i, f)| {
+                    Ok(match from_sql(f, r.get(i + 1)?) {
+                        Value::Str(s) => json!(s.trim_end()),
+                        v => to_json(&v).unwrap_or(Json::Null),
+                    })
+                });
+                Ok((r.get(0)?, cells.collect::<rusqlite::Result<_>>()?))
+            })?;
+            rows.collect()
+        };
+        let Ok(mut cells) = read() else { return empty };
+        let rows: Vec<Json> = keys.iter().take(1000).map(|k| json!({ "recno": k.1, "cells": cells.remove(&k.1) })).collect();
+        let fields: Vec<&str> = a.fields.iter().map(|f| f.name.as_str()).collect();
+        json!({ "fields": fields, "rows": rows, "recno": a.pos })
+    }
+
+    /// The user clicked the row of record `recno` in a Grid.
+    pub(crate) fn grid_go(&mut self, grid: &ObjRef, recno: &Value) -> R<()> {
+        let alias = self.get_prop(grid, "RECORDSOURCE")?.display();
+        let (Some(n), Value::Num(recno)) = (self.alias_area(&alias), recno) else { return Ok(()) };
+        // the record may have been deleted or filtered out since the grid was drawn
+        if self.keys(n)?.iter().any(|k| k.1 == *recno as i64) {
+            self.place(n, Some(*recno as i64));
+        }
+        Ok(())
     }
 
     pub(crate) fn set_deleted(&mut self, hide: bool) -> R<()> {

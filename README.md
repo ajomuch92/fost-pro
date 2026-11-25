@@ -9,8 +9,8 @@ Hecho con [Tauri](https://tauri.app) (Rust), Vue 3, TypeScript y Tailwind CSS.
 ## Estado
 
 El proyecto está en desarrollo. Hoy se puede escribir y ejecutar programas, diseñar y ejecutar
-formularios, y trabajar con tablas mediante los comandos de registros de FoxPro. Falta el SQL y enlazar
-los formularios a los datos.
+formularios enlazados a tablas, y trabajar con ellas mediante los comandos de registros de FoxPro. Falta
+el SQL.
 
 | Parte | Estado |
 | --- | --- |
@@ -23,7 +23,8 @@ los formularios a los datos.
 | Ayuda integrada (F1 o `HELP`) | Hecho |
 | Menús (`DEFINE MENU`, `DEFINE POPUP`, `_MSYSMENU`) | Hecho, primera versión |
 | Tablas: `USE`, `REPLACE`, `SCAN`, `SEEK`, índices, áreas de trabajo | Hecho, primera entrega |
-| SQL (`SELECT`, `UPDATE`, `DELETE FROM`), `BROWSE`, formularios enlazados a datos | Pendiente |
+| Formularios enlazados a datos (`ControlSource`, `Grid`) | Hecho, primera versión |
+| SQL (`SELECT`, `UPDATE`, `DELETE FROM`), `BROWSE` | Pendiente |
 | Proyectos y migrador desde FoxPro | Pendiente |
 | Reportes, ejecutables | Sin planear todavía |
 
@@ -43,13 +44,17 @@ los formularios a los datos.
   `BOF()`, campos de texto rellenos hasta su ancho, y un campo gana a una variable del mismo nombre
   (`m.nombre` llega a la variable).
 - **Objetos:** clases con herencia, `ADD OBJECT`, `THIS`, `THISFORM`, `DODEFAULT()`.
-- **Formularios:** 19 controles, con los eventos `Load`, `Init`, `Click`, `InteractiveChange`, `GotFocus`,
+- **Formularios:** 20 controles, con los eventos `Load`, `Init`, `Click`, `InteractiveChange`, `GotFocus`,
   `LostFocus`, `Timer`, `Activate` y `Destroy`. `MESSAGEBOX()` e `INPUTBOX()` para dialogar con el usuario.
   - Texto y entrada: `Label`, `TextBox`, `EditBox`, `Spinner`, `CheckBox`, `ComboBox`, `ListBox`.
   - Botones y grupos: `CommandButton`, `CommandGroup`, `OptionGroup` con sus `OptionButton`.
   - Dibujo: `Image`, `Line`, `Shape`.
   - Contenedores: `Container`, y `PageFrame` con sus `Page` (pestañas). Se pueden anidar.
   - Otros: `Timer`, y `HyperLink`, que se dibuja como un enlace y abre su `Url` en el navegador.
+  - Datos: `ControlSource` enlaza un `TextBox`, `EditBox`, `Spinner`, `CheckBox`, `ComboBox`, `ListBox` u
+    `OptionGroup` a un campo (`cliente.nombre`) o a una variable pública: muestra el registro actual y
+    guarda lo que el usuario escribe. `Grid` muestra la tabla de su `RecordSource`, y un clic en una fila
+    la hace el registro actual.
 - **Menús:** `DEFINE MENU`, `DEFINE PAD`, `DEFINE POPUP`, `DEFINE BAR`, `ON PAD`, `ON BAR`, `ON SELECTION`,
   `ACTIVATE MENU`, `DEACTIVATE MENU`, `RELEASE MENUS`, `RELEASE POPUPS` y `SET SYSMENU TO`, con submenús,
   separadores (`\-`), letra subrayada (`\<`), `SKIP FOR` y las funciones `BAR()`, `PROMPT()`, `POPUP()`,
@@ -78,13 +83,17 @@ La lista completa de comandos, funciones, clases y propiedades está en la ayuda
   nuevo. Los datos sí se conservan.
 - En las tablas faltan el `SELECT` de SQL, `BROWSE`, `SET FILTER`, `SET RELATION`, los campos de fecha y
   hora, y las reglas de columna (`DEFAULT`, `PRIMARY KEY`).
-- Los formularios aún no se enlazan a las tablas: no hay `ControlSource` hacia campos ni `Grid`.
+- Los controles enlazados se actualizan solos cuando termina cada evento, sin llamar a `Refresh()`.
+  Dentro de un método sí hace falta, como en FoxPro.
+- El `Grid` es de solo lectura, muestra todos los campos (no hay `Column` ni `ColumnCount`) y como máximo
+  1000 registros. No hay entorno de datos: las tablas se abren con `USE` en el evento `Load`. `RowSource`
+  de un `ComboBox` aún no acepta tablas, y no hay `TABLEUPDATE()` ni buffering.
 - `HyperLink` es un control visible, no el objeto invisible de FoxPro; `NavigateTo()` sí funciona igual.
 - `ACTIVATE MENU` no detiene el programa a esperar una elección: el menú queda en pantalla y el programa
   sigue. Un bucle que lo active una y otra vez no termina.
 - En los menús no hay atajos de teclado (`KEY` se acepta y se ignora), `BEFORE`/`AFTER`, barras del sistema
   (`_MED_COPY`...), `ACTIVATE POPUP` suelto como menú contextual ni diseñador visual de menús.
-- Faltan `Grid`, `Collection` y los controles ActiveX, que no se podrán portar.
+- Faltan `Collection` y los controles ActiveX, que no se podrán portar.
 
 ## Cómo ejecutarlo
 
@@ -153,6 +162,6 @@ sin error y por qué fallan las demás. Hoy pasan 7 de 34.
 ## Lo que sigue
 
 1. Más base de datos: `SELECT` y demás SQL, `BROWSE`, órdenes que se conserven, filtros y relaciones.
-2. Enlace de los formularios a los datos: `ControlSource`, `Grid`, entorno de datos.
+2. Más enlace a datos: `Grid` editable con columnas, entorno de datos, listas llenas desde tablas.
 3. Proyectos, y el migrador que convierte un proyecto de FoxPro (`.prg`, `.dbf`, `.scx`) e informa de lo
    que no pudo convertir.

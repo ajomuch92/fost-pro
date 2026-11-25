@@ -97,7 +97,7 @@ impl Interp {
         match name {
             "SHOW" | "HIDE" => self.set_prop(obj, "VISIBLE", Value::Bool(name == "SHOW"))?,
             "RELEASE" => self.release(obj)?,
-            "REFRESH" => {}
+            "REFRESH" => self.pull_bound(obj, true),
             "SETFOCUS" => self.focus = Some(obj.0.borrow().id),
             "NAVIGATETO" => {
                 let url = text(0)?;
@@ -223,6 +223,7 @@ impl Interp {
             parent: parent.map(|p| Rc::downgrade(&p.0)),
             methods: HashMap::new(),
             items: Vec::new(),
+            seen: None,
         })));
         match parent {
             Some(parent) => {
@@ -380,7 +381,16 @@ impl Interp {
         self.guarded(|it| {
             for (key, v) in props.as_object().into_iter().flatten() {
                 let v = from_json(v).ok_or_else(|| err(format!("El valor de {key} no es válido")))?;
-                obj.0.borrow_mut().props.insert(key.to_uppercase(), v);
+                let key = key.to_uppercase();
+                // a click on a row of a Grid
+                if key == "RECNO" {
+                    it.grid_go(&obj, &v)?;
+                    continue;
+                }
+                obj.0.borrow_mut().props.insert(key.clone(), v);
+                if key == "VALUE" {
+                    it.push_bound(&obj)?;
+                }
             }
             match event.map(str::to_uppercase).as_deref() {
                 Some("CLOSE") => it.release(&obj),
@@ -391,12 +401,69 @@ impl Interp {
     }
 
     /// The visible forms, as the tree a UI needs to draw them.
-    pub fn forms_json(&self) -> Json {
-        let visible = |f: &&ObjRef| f.0.borrow().props.get("VISIBLE") == Some(&Value::Bool(true));
-        self.forms.iter().filter(visible).map(|f| self.snapshot(f)).collect()
+    pub fn forms_json(&mut self) -> Json {
+        let visible = |f: &ObjRef| f.0.borrow().props.get("VISIBLE") == Some(&Value::Bool(true));
+        let shown: Vec<ObjRef> = self.forms.iter().filter(|f| visible(f)).cloned().collect();
+        // what the program did may have moved a record pointer: bound controls follow it
+        shown.iter().for_each(|f| self.pull_bound(f, false));
+        shown.iter().map(|f| self.snapshot(f)).collect()
     }
 
-    fn snapshot(&self, obj: &ObjRef) -> Json {
+    /// The ControlSource of a control that has one.
+    fn source(obj: &ObjRef) -> Option<String> {
+        match obj.0.borrow().props.get("CONTROLSOURCE") {
+            Some(Value::Str(s)) if !s.trim().is_empty() => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// Loads into the bound controls of a tree what their sources hold now. Unless `force`,
+    /// only where the source changed since the control last looked: what the user is typing stays.
+    fn pull_bound(&mut self, obj: &ObjRef, force: bool) {
+        // a source that is not there now (its table is closed) leaves the control as it is
+        if let Some(Ok(Some(v))) = Self::source(obj).map(|s| self.read_source(&s)) {
+            let mut o = obj.0.borrow_mut();
+            if force || o.seen.as_ref() != Some(&v) {
+                // text fields come padded to their width, which gets in the way of typing
+                let shown = match &v {
+                    Value::Str(s) => Value::Str(s.trim_end().to_string()),
+                    other => other.clone(),
+                };
+                o.props.insert("VALUE".into(), shown);
+                o.seen = Some(v);
+            }
+        }
+        let kids = obj.0.borrow().kids();
+        kids.iter().for_each(|k| self.pull_bound(k, force));
+    }
+
+    /// Stores the Value of a bound control in its source, once the control has loaded from it.
+    pub(crate) fn push_bound(&mut self, obj: &ObjRef) -> R<()> {
+        let (Some(source), Some(value), true) = (Self::source(obj), obj.0.borrow().props.get("VALUE").cloned(), obj.0.borrow().seen.is_some())
+        else {
+            return Ok(());
+        };
+        self.write_source(&source, value)?;
+        if let Some(v) = self.read_source(&source)? {
+            obj.0.borrow_mut().seen = Some(v);
+        }
+        Ok(())
+    }
+
+    fn snapshot(&mut self, obj: &ObjRef) -> Json {
+        if obj.0.borrow().base == "GRID" {
+            let alias = self.get_prop(obj, "RECORDSOURCE").map_or(String::new(), |v| v.display());
+            let grid = self.grid_json(&alias);
+            let mut node = self.snapshot_plain(obj);
+            node["grid"] = grid;
+            return node;
+        }
+        self.snapshot_plain(obj)
+    }
+
+    fn snapshot_plain(&mut self, obj: &ObjRef) -> Json {
+        let kids = obj.0.borrow().kids();
+        let children: Vec<Json> = kids.iter().map(|k| self.snapshot(k)).collect();
         let o = obj.0.borrow();
         let props: serde_json::Map<String, Json> = o.props.iter().filter_map(|(k, v)| Some((k.clone(), to_json(v)?))).collect();
         // the events somebody handles: the UI only needs to report those
@@ -406,7 +473,6 @@ impl Interp {
             events.extend(class.methods.iter().map(|(name, _)| name.clone()));
             next = Some(class.parent.clone());
         }
-        let children: Vec<Json> = o.kids().iter().map(|k| self.snapshot(k)).collect();
         json!({ "id": o.id, "base": o.base, "props": props, "items": o.list(), "events": events, "children": children })
     }
 }
