@@ -485,8 +485,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -1085,9 +1087,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fost-lang"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "fost-pro"
 version = "0.1.0"
 dependencies = [
+ "fost-lang",
  "serde",
  "serde_json",
  "tauri",
