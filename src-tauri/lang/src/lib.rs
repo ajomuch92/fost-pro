@@ -3,10 +3,13 @@
 mod builtins;
 mod interp;
 mod lexer;
+mod object;
+mod objects;
 mod parser;
 mod value;
 
-pub use interp::Interp;
+pub use interp::{Host, Interp, Open};
+pub use object::class_info;
 
 /// Stack size for the thread that owns an `Interp`. The interpreter recurses on the native
 /// stack, and 128 nested calls (the limit) overflow a default 2 MB thread in debug builds.

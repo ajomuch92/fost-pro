@@ -1,3 +1,4 @@
+use crate::object::ObjRef;
 use chrono::{Duration, NaiveDate};
 use std::cmp::Ordering;
 
@@ -10,6 +11,7 @@ pub enum Value {
     Date(Option<NaiveDate>),
     Null,
     Array(Array),
+    Object(ObjRef),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,7 +67,8 @@ impl Value {
             Value::Date(Some(d)) => d.format("%m/%d/%Y").to_string(),
             Value::Date(None) => "  /  /    ".into(),
             Value::Null => ".NULL.".into(),
-            Value::Array(a) => a.data[0].display(),
+            Value::Array(a) => a.data.first().map_or(String::new(), Value::display),
+            Value::Object(_) => "(Objeto)".into(),
         }
     }
 
@@ -77,7 +80,8 @@ impl Value {
             Value::Bool(_) => 'L',
             Value::Date(_) => 'D',
             Value::Null => 'X',
-            Value::Array(a) => a.data[0].type_char(),
+            Value::Array(a) => a.data.first().map_or('U', Value::type_char),
+            Value::Object(_) => 'O',
         }
     }
 }
@@ -167,6 +171,8 @@ pub fn binary(op: &str, a: Value, b: Value, exact: bool) -> Result<Value, String
         ("<>" | "!=" | "#", Str(x), Str(y)) if !exact => Bool(!x.starts_with(&y)),
         ("=", Str(x), Str(y)) => Bool(x.trim_end_matches(' ') == y.trim_end_matches(' ')),
         ("<>" | "!=" | "#", Str(x), Str(y)) => Bool(x.trim_end_matches(' ') != y.trim_end_matches(' ')),
+        ("=" | "==", Object(x), Object(y)) => Bool(x == y),
+        ("<>" | "!=" | "#", Object(x), Object(y)) => Bool(x != y),
         (op, a, b) => {
             let ord = compare(&a, &b).ok_or(MISMATCH)?;
             Bool(match op {

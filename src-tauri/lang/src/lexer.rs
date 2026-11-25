@@ -129,8 +129,10 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
                     Err(_) => return fail("Número no válido"),
                 }
             }
-            // .T. .F. .NULL. .AND. .OR. .NOT.
-            '.' if at(i + 1).is_alphabetic() => {
+            // .T. .F. .NULL. .AND. .OR. .NOT., or the dot of `object.member`
+            '.' if at(i + 1).is_alphabetic() || at(i + 1) == '_' => {
+                // glued to what comes before, it reads a member: `x.t.y` is not `x`, true, `y`
+                let glued = i > 0 && (c[i - 1].is_alphanumeric() || matches!(c[i - 1], '_' | ')' | ']'));
                 let mut j = i + 1;
                 while at(j).is_alphabetic() {
                     j += 1;
@@ -138,10 +140,11 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
                 let word: String = c[i + 1..j].iter().collect::<String>().to_uppercase();
                 let tok = match word.as_str() {
                     _ if at(j) != '.' => None,
+                    "AND" | "OR" | "NOT" => Some(Tok::Ident(word)),
+                    _ if glued => None,
                     "T" | "Y" => Some(Tok::Bool(true)),
                     "F" | "N" => Some(Tok::Bool(false)),
                     "NULL" => Some(Tok::Null),
-                    "AND" | "OR" | "NOT" => Some(Tok::Ident(word)),
                     _ => None,
                 };
                 match tok {
@@ -150,7 +153,8 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
                         i = j + 1;
                     }
                     None => {
-                        toks.push(Tok::Op("."));
+                        // "WITH." is the leading dot of `.Caption` inside a WITH block
+                        toks.push(Tok::Op(if glued { "." } else { "WITH." }));
                         i += 1;
                     }
                 }

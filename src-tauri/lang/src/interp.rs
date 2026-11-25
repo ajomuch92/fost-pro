@@ -1,4 +1,5 @@
-use crate::parser::{Expr, Kind, Routine, Scope, Stmt, Target, parse, parse_expr};
+use crate::object::ObjRef;
+use crate::parser::{ClassDef, Expr, Kind, Routine, Scope, Stmt, parse, parse_expr};
 use crate::value::{Array, Value, binary, fmt_num, unary};
 use crate::{Error, R, builtins, err};
 use std::cell::RefCell;
@@ -8,20 +9,44 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-type VarRef = Rc<RefCell<Value>>;
+pub(crate) type VarRef = Rc<RefCell<Value>>;
 
-fn var(v: Value) -> VarRef {
+pub(crate) fn var(v: Value) -> VarRef {
     Rc::new(RefCell::new(v))
 }
 
+/// What the interpreter needs from the program that hosts it.
+pub trait Host {
+    /// Shows MESSAGEBOX() and returns the code of the button pressed (1 OK, 2 Cancel, 6 Yes, 7 No).
+    /// `buttons` is FoxPro's dialog type number. None means there is no UI to show it on.
+    fn message_box(&mut self, _text: &str, _buttons: i64, _title: &str) -> Option<i64> {
+        None
+    }
+}
+
+impl Host for () {}
+
+/// A file MODIFY COMMAND, MODIFY FORM or CREATE FORM asked the IDE to open.
+pub struct Open {
+    pub form: bool,
+    /// None for a new, untitled document. The file may not exist yet.
+    pub path: Option<PathBuf>,
+}
+
 #[derive(Default)]
-struct Frame {
+pub(crate) struct Frame {
     /// name -> (value, is LOCAL). Non-local variables are visible to called routines.
-    vars: HashMap<String, (VarRef, bool)>,
+    pub(crate) vars: HashMap<String, (VarRef, bool)>,
     /// Names declared PRIVATE here: outer variables with these names are hidden.
-    hidden: HashSet<String>,
+    pub(crate) hidden: HashSet<String>,
     /// Arguments not yet claimed by a PARAMETERS / LPARAMETERS statement.
-    args: Vec<VarRef>,
+    pub(crate) args: Vec<VarRef>,
+    /// THIS, when a method is running.
+    pub this: Option<ObjRef>,
+    /// The method running, for DODEFAULT(): the class that defines it (None: the object itself) and its name.
+    pub method: Option<(Option<String>, String)>,
+    /// Objects of the WITH blocks open in this routine.
+    pub(crate) with: Vec<ObjRef>,
 }
 
 enum Flow {
@@ -31,28 +56,41 @@ enum Flow {
     Return(Value),
 }
 
-/// Keeps variables and routines between `run` calls, so it can back a command window.
+/// Something defined by a program, with where: None for the source being run now.
+type Defined<T> = (Rc<T>, Option<String>);
+
+/// Keeps variables, routines, classes and forms between calls, so it can back a command window.
 pub struct Interp {
-    /// name -> (routine, where it was defined; None for the source being run now).
-    routines: HashMap<String, (Rc<Routine>, Option<String>)>,
-    /// Where `DO name` looks for `name.fost`.
+    routines: HashMap<String, Defined<Routine>>,
+    pub(crate) classes: HashMap<String, Defined<ClassDef>>,
+    /// Where `DO name` and `DO FORM name` look for files.
     pub dir: PathBuf,
     exact: bool,
     decimals: usize,
     /// frames[0] is the top level; PUBLIC variables live there.
-    frames: Vec<Frame>,
+    pub(crate) frames: Vec<Frame>,
     out: String,
     /// Set when CLEAR ran; the host should wipe what it has shown so far.
     pub clear: bool,
     /// Set from another thread to interrupt a running program.
     pub stop: Arc<AtomicBool>,
     rng: u64,
+    /// Every form created and not yet released.
+    // shortcut: a form stays alive until released, even when no variable refers to it any more
+    pub(crate) forms: Vec<ObjRef>,
+    pub(crate) next_id: u64,
+    /// Id of the control SetFocus() was called on; the host should move the focus there.
+    pub focus: Option<u64>,
+    /// Set by MODIFY COMMAND and friends; the host should open that file.
+    pub open: Option<Open>,
+    pub host: Box<dyn Host>,
 }
 
 impl Default for Interp {
     fn default() -> Self {
         Interp {
             routines: HashMap::new(),
+            classes: HashMap::new(),
             dir: PathBuf::from("."),
             exact: false,
             decimals: 10,
@@ -61,6 +99,11 @@ impl Default for Interp {
             clear: false,
             stop: Arc::default(),
             rng: 0x2545_F491_4F6C_DD1D,
+            forms: Vec::new(),
+            next_id: 0,
+            focus: None,
+            open: None,
+            host: Box::new(()),
         }
     }
 }
@@ -68,17 +111,14 @@ impl Default for Interp {
 impl Interp {
     pub fn run(&mut self, src: &str) -> Result<(), Error> {
         let prog = parse(src)?;
-        // line numbers of routines kept from earlier runs no longer refer to `src`
-        for (_, origin) in self.routines.values_mut() {
-            origin.get_or_insert_with(|| "un comando anterior".into());
-        }
+        self.retire();
         for (name, routine) in prog.routines {
             self.routines.insert(name, (Rc::new(routine), None));
         }
-        self.stop.store(false, Ordering::Relaxed);
-        let res = self.block(&prog.main);
-        self.frames.truncate(1);
-        res.map(|_| ())
+        for class in prog.classes {
+            self.classes.insert(class.name.clone(), (Rc::new(class), None));
+        }
+        self.guarded(|it| it.block(&prog.main).map(|_| ()))
     }
 
     /// Text printed since the last call. `?` writes a newline *before* its values, as in FoxPro.
@@ -86,7 +126,24 @@ impl Interp {
         std::mem::take(&mut self.out)
     }
 
-    fn top(&mut self) -> &mut Frame {
+    /// Line numbers of routines and classes kept from earlier runs no longer refer to the source being run.
+    pub(crate) fn retire(&mut self) {
+        let origins = self.routines.values_mut().map(|(_, o)| o).chain(self.classes.values_mut().map(|(_, o)| o));
+        for origin in origins {
+            origin.get_or_insert_with(|| "un comando anterior".into());
+        }
+    }
+
+    /// Runs one request from the host, leaving the interpreter ready for the next whatever happens.
+    pub(crate) fn guarded(&mut self, f: impl FnOnce(&mut Self) -> R<()>) -> R<()> {
+        self.stop.store(false, Ordering::Relaxed);
+        let res = f(self);
+        self.frames.truncate(1);
+        self.frames[0].with.clear();
+        res
+    }
+
+    pub(crate) fn top(&mut self) -> &mut Frame {
         self.frames.last_mut().unwrap()
     }
 
@@ -128,8 +185,32 @@ impl Interp {
         }
     }
 
-    fn nums(&mut self, exprs: &[Expr]) -> R<Vec<f64>> {
+    pub(crate) fn nums(&mut self, exprs: &[Expr]) -> R<Vec<f64>> {
         exprs.iter().map(|e| self.num(e)).collect()
+    }
+
+    /// Arguments for a call: `@name` shares the variable, anything else is passed by value.
+    pub(crate) fn arg_refs(&mut self, args: &[Expr]) -> R<Vec<VarRef>> {
+        let mut refs = Vec::new();
+        for a in args {
+            refs.push(match a {
+                Expr::Ref(n) => self.get(n)?,
+                _ => var(self.eval(a)?),
+            });
+        }
+        Ok(refs)
+    }
+
+    /// Arguments for DO ... WITH, which also passes plain variables by reference.
+    fn do_refs(&mut self, args: &[Expr]) -> R<Vec<VarRef>> {
+        let mut refs = Vec::new();
+        for a in args {
+            refs.push(match a {
+                Expr::Var(n) | Expr::Ref(n) => self.get(n)?,
+                _ => var(self.eval(a)?),
+            });
+        }
+        Ok(refs)
     }
 
     fn block(&mut self, stmts: &[Stmt]) -> R<Flow> {
@@ -233,8 +314,7 @@ impl Interp {
                     Some(e) => self.num(e)?,
                     None => 1.0,
                 };
-                let counter = Target { name: name.clone(), idx: Vec::new() };
-                self.assign(&counter, Value::Num(from))?;
+                self.set_var(name, Value::Num(from));
                 // the counter is re-read each pass: the body may change it
                 loop {
                     let Value::Num(i) = *self.get(name)?.borrow() else {
@@ -249,20 +329,26 @@ impl Interp {
                     let Value::Num(i) = *self.get(name)?.borrow() else {
                         return Err(err("El contador del FOR debe ser numérico"));
                     };
-                    self.assign(&counter, Value::Num(i + step))?;
+                    self.set_var(name, Value::Num(i + step));
                 }
             }
             Kind::ForEach { var: name, iter, body } => {
                 let Value::Array(items) = self.eval(iter)? else {
                     return Err(err("FOR EACH necesita un arreglo"));
                 };
-                let item = Target { name: name.clone(), idx: Vec::new() };
                 for v in items.data {
-                    self.assign(&item, v)?;
+                    self.set_var(name, v);
                     if let Some(flow) = self.iteration(body)? {
                         return Ok(flow);
                     }
                 }
+            }
+            Kind::With { object, body } => {
+                let obj = self.object(object)?;
+                self.top().with.push(obj);
+                let res = self.block(body);
+                self.top().with.pop();
+                return res;
             }
             Kind::Loop => return Ok(Flow::Loop),
             Kind::Exit => return Ok(Flow::Exit),
@@ -271,15 +357,20 @@ impl Interp {
                     Some(found) => found,
                     None => self.load(name)?,
                 };
-                // DO ... WITH passes plain variables by reference
-                let mut refs = Vec::new();
-                for a in args {
-                    refs.push(match a {
-                        Expr::Var(n) | Expr::Ref(n) => self.get(n)?,
-                        _ => var(self.eval(a)?),
-                    });
+                let refs = self.do_refs(args)?;
+                self.call(routine, origin, refs, Frame::default())?;
+            }
+            Kind::DoForm { name, args, var: holder, show } => {
+                let refs = self.do_refs(args)?;
+                let form = self.load_form(name, refs, *show)?;
+                if let Some(holder) = holder {
+                    self.set_var(holder, Value::Object(form));
                 }
-                self.call(routine, origin, refs)?;
+            }
+            Kind::Open { form, name } => {
+                let ext = if *form { "fostform" } else { "fost" };
+                let file = |it: &Self, n: &String| it.find_file(n, ext).unwrap_or(format!("{}.{ext}", n.to_lowercase()));
+                self.open = Some(Open { form: *form, path: name.as_ref().map(|n| self.dir.join(file(self, n))) });
             }
             Kind::Return(e) => {
                 return Ok(Flow::Return(match e {
@@ -329,14 +420,17 @@ impl Interp {
         Ok(Flow::Next)
     }
 
-    /// Reads `name.fost` from `dir` for DO. Its procedures become available to everyone.
-    // shortcut: bare names in one directory only; upgrade when SET PATH or `DO path\file` is needed
-    fn load(&mut self, name: &str) -> R<(Rc<Routine>, Option<String>)> {
-        let wanted = format!("{name}.FOST");
-        // the lexer upper-cased the name, so match the file name ignoring case
+    /// The file `name.ext` in `dir`, whatever its case: the lexer upper-cased the name.
+    pub(crate) fn find_file(&self, name: &str, ext: &str) -> Option<String> {
+        let wanted = format!("{name}.{ext}").to_uppercase();
         let entries = std::fs::read_dir(&self.dir).ok().into_iter().flatten().flatten();
-        let file = entries.map(|e| e.file_name().to_string_lossy().into_owned()).find(|f| f.to_uppercase() == wanted);
-        let Some(file) = file else {
+        entries.map(|e| e.file_name().to_string_lossy().into_owned()).find(|f| f.to_uppercase() == wanted)
+    }
+
+    /// Reads `name.fost` from `dir` for DO. Its procedures and classes become available to everyone.
+    // shortcut: bare names in one directory only; upgrade when SET PATH or `DO path\file` is needed
+    fn load(&mut self, name: &str) -> R<Defined<Routine>> {
+        let Some(file) = self.find_file(name, "fost") else {
             return Err(err(format!("Procedimiento o programa no encontrado: {name}")));
         };
         let tag = |mut e: Error| {
@@ -348,42 +442,76 @@ impl Interp {
         for (name, routine) in prog.routines {
             self.routines.insert(name, (Rc::new(routine), Some(file.clone())));
         }
+        for class in prog.classes {
+            self.classes.insert(class.name.clone(), (Rc::new(class), Some(file.clone())));
+        }
         Ok((Rc::new(Routine { params: Vec::new(), body: prog.main }), Some(file)))
     }
 
-    fn assign(&mut self, t: &Target, v: Value) -> R<()> {
-        if !t.idx.is_empty() {
-            let idx = self.nums(&t.idx)?;
-            let r = self.get(&t.name)?;
-            let mut cur = r.borrow_mut();
-            let Value::Array(a) = &mut *cur else {
-                return Err(err(format!("{} no es un arreglo", t.name)));
-            };
-            let k = a.offset(&idx)?;
-            a.data[k] = v;
-            return Ok(());
+    /// A plain value assigned to an array fills every element; anything else replaces the slot.
+    fn store(slot: &mut Value, v: Value) {
+        match (slot, v) {
+            (slot, v @ Value::Array(_)) => *slot = v,
+            (Value::Array(a), v) => a.data.fill(v),
+            (slot, v) => *slot = v,
         }
-        match self.lookup(&t.name) {
-            Some(r) => match (&mut *r.borrow_mut(), v) {
-                (cur, v @ Value::Array(_)) => *cur = v,
-                // assigning a plain value to an array fills every element
-                (Value::Array(a), v) => a.data.fill(v),
-                (cur, v) => *cur = v,
-            },
+    }
+
+    fn store_element(slot: &mut Value, idx: &[f64], v: Value) -> R<()> {
+        let Value::Array(a) = slot else { return Err(err("No es un arreglo")) };
+        let k = a.offset(idx)?;
+        a.data[k] = v;
+        Ok(())
+    }
+
+    pub(crate) fn set_var(&mut self, name: &str, v: Value) {
+        match self.lookup(name) {
+            Some(r) => Self::store(&mut r.borrow_mut(), v),
             None => {
-                self.top().vars.insert(t.name.clone(), (var(v), false));
+                self.top().vars.insert(name.to_string(), (var(v), false));
             }
+        }
+    }
+
+    pub(crate) fn set_prop(&mut self, obj: &ObjRef, name: &str, v: Value) -> R<()> {
+        match obj.0.borrow_mut().props.get_mut(name) {
+            Some(slot) => Self::store(slot, v),
+            None => return Err(err(format!("Propiedad no encontrada: {name}"))),
         }
         Ok(())
     }
 
-    fn call(&mut self, routine: Rc<Routine>, origin: Option<String>, args: Vec<VarRef>) -> R<Value> {
+    fn assign(&mut self, place: &Expr, v: Value) -> R<()> {
+        match place {
+            Expr::Var(name) => self.set_var(name, v),
+            Expr::Call(name, idx) => {
+                let idx = self.nums(idx)?;
+                Self::store_element(&mut self.get(name)?.borrow_mut(), &idx, v)?;
+            }
+            Expr::Member(object, name) => {
+                let obj = self.object(object)?;
+                self.set_prop(&obj, name, v)?;
+            }
+            Expr::Method(object, name, idx) => {
+                let obj = self.object(object)?;
+                let idx = self.nums(idx)?;
+                match obj.0.borrow_mut().props.get_mut(name) {
+                    Some(slot) => Self::store_element(slot, &idx, v)?,
+                    None => return Err(err(format!("Propiedad no encontrada: {name}"))),
+                }
+            }
+            _ => return Err(err("No se puede asignar a esta expresión")),
+        }
+        Ok(())
+    }
+
+    /// Runs a routine in `frame`, which may already carry THIS for a method.
+    pub(crate) fn call(&mut self, routine: Rc<Routine>, origin: Option<String>, args: Vec<VarRef>, mut frame: Frame) -> R<Value> {
         // 128 nested DO levels is also FoxPro's limit
         if self.frames.len() >= 128 {
             return Err(err("Demasiadas llamadas anidadas (máximo 128)"));
         }
         self.tick()?;
-        let mut frame = Frame::default();
         if routine.params.is_empty() {
             frame.args = args;
         } else {
@@ -411,11 +539,25 @@ impl Interp {
         })
     }
 
-    fn eval(&mut self, e: &Expr) -> R<Value> {
+    pub(crate) fn eval(&mut self, e: &Expr) -> R<Value> {
         Ok(match e {
             Expr::Lit(v) => v.clone(),
+            Expr::Var(n) if n == "THIS" || n == "THISFORM" => Value::Object(self.this(n == "THISFORM")?),
             Expr::Var(n) => self.get(n)?.borrow().clone(),
             Expr::Ref(_) => return Err(err("'@' solo se permite en argumentos de una llamada")),
+            Expr::WithObj => match self.top().with.last() {
+                Some(obj) => Value::Object(obj.clone()),
+                None => return Err(err("'.nombre' solo puede usarse dentro de WITH")),
+            },
+            Expr::Member(object, name) => {
+                let obj = self.object(object)?;
+                self.get_prop(&obj, name)?
+            }
+            Expr::Method(object, name, args) => {
+                let obj = self.object(object)?;
+                let refs = self.arg_refs(args)?;
+                self.send(&obj, name, refs, None)?
+            }
             Expr::Un(op, x) => unary(op, self.eval(x)?)?,
             Expr::Bin(op @ ("AND" | "OR"), l, r) => {
                 // short-circuit, as FoxPro does
@@ -440,14 +582,8 @@ impl Interp {
             }
         }
         if let Some((routine, origin)) = self.routines.get(name).cloned() {
-            let mut refs = Vec::new();
-            for a in args {
-                refs.push(match a {
-                    Expr::Ref(n) => self.get(n)?,
-                    _ => var(self.eval(a)?),
-                });
-            }
-            return self.call(routine, origin, refs);
+            let refs = self.arg_refs(args)?;
+            return self.call(routine, origin, refs, Frame::default());
         }
         let Some(full) = builtins::resolve(name) else {
             return Err(err(format!("Función no encontrada: {name}")));
@@ -479,6 +615,39 @@ impl Interp {
                 self.rng ^= self.rng >> 7;
                 self.rng ^= self.rng << 17;
                 Value::Num((self.rng >> 11) as f64 / (1u64 << 53) as f64)
+            }
+            "CREATEOBJECT" => {
+                let class = text(self, 0)?.to_uppercase();
+                let refs = self.arg_refs(&args[1..])?;
+                let obj = self.create(&class, None, &class)?;
+                self.init_tree(&obj, refs)?;
+                Value::Object(obj)
+            }
+            "DODEFAULT" => {
+                let frame = self.top();
+                let (Some(this), Some((level, method))) = (frame.this.clone(), frame.method.clone()) else {
+                    return Err(err("DODEFAULT solo puede usarse dentro de un método"));
+                };
+                let refs = self.arg_refs(args)?;
+                self.send(&this, &method, refs, Some(&level))?
+            }
+            "MESSAGEBOX" => {
+                let message = self.eval(arg(0)?)?.display();
+                // the second argument is the dialog type, or the title when it is text
+                let (mut buttons, mut title) = (0, String::new());
+                for a in args.iter().skip(1).take(2) {
+                    match self.eval(a)? {
+                        Value::Num(n) => buttons = n as i64,
+                        v => title = v.display(),
+                    }
+                }
+                let answer = self.host.message_box(&message, buttons, &title).unwrap_or_else(|| {
+                    // no UI: print it and answer OK
+                    self.out.push('\n');
+                    self.out.push_str(&message);
+                    1
+                });
+                Value::Num(answer as f64)
             }
             _ => {
                 let mut vals = Vec::new();

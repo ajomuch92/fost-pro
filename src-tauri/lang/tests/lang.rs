@@ -220,3 +220,160 @@ fn do_runs_a_program_file_and_errors_name_their_origin() {
     assert_eq!(it.run("? nope").unwrap_err().file, None);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn classes_and_objects() {
+    let src = "
+o = CREATEOBJECT('Counter', 10)
+o.Add(5)
+o.Add()
+? o.Total, o.Describe(), VARTYPE(o), o.Class, o.BaseClass
+WITH o
+    .Total = .Total * 2
+    ? .Total, .History[1] + .History(2)
+ENDWITH
+other = o
+other.Total = 1
+? o.Total, o = other, o = CREATEOBJECT('Counter', 0)
+? o.Nope
+
+DEFINE CLASS Base AS Custom
+    Total = 0
+    PROCEDURE Init(start)
+        THIS.Total = start
+    PROCEDURE Describe
+        RETURN 'total ' + STR(THIS.Total, 2)
+ENDDEFINE
+
+DEFINE CLASS Counter AS Base
+    DIMENSION History[2]
+    Step = 1
+    PROCEDURE Init(start)
+        DODEFAULT(start)
+        THIS.History = 0
+    ENDPROC
+    PROCEDURE Add(n)
+        THIS.Total = THIS.Total + IIF(VARTYPE(n) = 'N', n, THIS.Step)
+        THIS.History[1] = THIS.Total
+        THIS.History[2] = 100
+    ENDPROC
+    FUNCTION Describe
+        RETURN 'counter, ' + DODEFAULT()
+    ENDFUNC
+ENDDEFINE
+";
+    assert_eq!(
+        run(src),
+        "16 counter, total 16 O COUNTER Custom\n32 116\n1 .T. .F.!Línea 13: Propiedad no encontrada: NOPE"
+    );
+    assert_eq!(run("? THIS.x"), "!Línea 1: THIS y THISFORM solo pueden usarse dentro de un método");
+    assert_eq!(run("x = CREATEOBJECT('Nope')"), "!Línea 1: Clase no encontrada: NOPE");
+    assert_eq!(run("x = 1\n? x.y"), "!Línea 2: Se esperaba un objeto");
+    // a member named like a logical literal is still a member
+    assert_eq!(run("o = CREATEOBJECT('Custom')\no.AddProperty('t', 7)\n? o.t + 1, .T..AND..T."), "8 .T.");
+}
+
+#[test]
+fn forms_built_from_classes() {
+    let src = "
+f = CREATEOBJECT('Login')
+? f.txtUser.Value, f.cmdOk.Caption, f.ControlCount, f.Visible
+f.cmdOk.Click()
+FOR EACH c IN f.Controls
+    ?? c.Name + ' '
+ENDFOR
+f.AddObject('lblNew', 'Label')
+? f.lblNew.Visible, f.lblNew.Parent.Caption
+f.Release()
+
+DEFINE CLASS Login AS Form
+    Caption = 'Entrar'
+    ADD OBJECT txtUser AS TextBox WITH Value = 'ana', Left = 10
+    ADD OBJECT cmdOk AS CommandButton WITH Caption = 'OK'
+    cmdOk.Top = 40
+    PROCEDURE cmdOk.Click
+        ? 'click', THIS.Top, THISFORM.Caption, THIS.Parent.txtUser.Value
+        THISFORM.Hide
+    PROCEDURE Destroy
+        ? 'bye'
+ENDDEFINE
+";
+    assert_eq!(run(src), "ana OK 2 .F.\nclick 40 Entrar anaTXTUSER CMDOK \n.F. Entrar\nbye");
+}
+
+const FORM: &str = r#"{
+  "class": "Form",
+  "props": { "Name": "frmDemo", "Caption": "Demo", "Width": 300 },
+  "methods": { "Init": "LPARAMETERS who\nTHIS.Caption = 'Hola ' + IIF(VARTYPE(who) = 'C', who, 'nadie')" },
+  "controls": [
+    { "class": "TextBox", "props": { "Name": "txtName", "Left": 10 } },
+    { "class": "ComboBox", "props": { "Name": "cboColor", "RowSourceType": 1, "RowSource": "rojo, verde" } },
+    { "class": "CommandButton", "props": { "Name": "cmdGo", "Caption": "Ir" },
+      "methods": { "Click": "THISFORM.Caption = THISFORM.txtName.Value\n? MESSAGEBOX('hecho')\nTHISFORM.txtName.SetFocus()", "Boom": "x = 1\n? 1 / 0" } }
+  ]
+}"#;
+
+#[test]
+fn forms_from_a_form_file_react_to_ui_events() {
+    let mut it = Interp::default();
+    it.run_form(FORM, "demo").unwrap();
+    let forms = it.forms_json();
+    let form = &forms[0];
+    assert_eq!(form["props"]["CAPTION"], "Hola nadie");
+    assert_eq!(form["props"]["WIDTH"], 300.0);
+    assert_eq!(form["children"][1]["items"], serde_json::json!(["rojo", "verde"]));
+    let (text, button) = (&form["children"][0], &form["children"][2]);
+    assert_eq!(button["base"], "COMMANDBUTTON");
+    assert!(button["events"].as_array().unwrap().contains(&"CLICK".into()));
+
+    // the user types, then clicks: the value travels first, the handler sees it
+    it.ui_event(text["id"].as_u64().unwrap(), &serde_json::json!({ "Value": "Ana" }), None).unwrap();
+    let button_id = button["id"].as_u64().unwrap();
+    it.ui_event(button_id, &serde_json::Value::Null, Some("Click")).unwrap();
+    assert_eq!(it.forms_json()[0]["props"]["CAPTION"], "Ana");
+    // with no UI, MESSAGEBOX prints its text and answers OK
+    assert_eq!(it.take_output(), "\nhecho\n1");
+    assert_eq!(it.focus, text["id"].as_u64());
+
+    let e = it.ui_event(button_id, &serde_json::Value::Null, Some("Boom")).unwrap_err();
+    assert_eq!(e.to_string(), "demo.cmdGo.Boom, línea 2: División entre cero");
+
+    it.ui_event(form["id"].as_u64().unwrap(), &serde_json::Value::Null, Some("close")).unwrap();
+    assert_eq!(it.forms_json(), serde_json::json!([]));
+    // an event for a form that is gone is ignored
+    it.ui_event(button_id, &serde_json::Value::Null, Some("Click")).unwrap();
+}
+
+#[test]
+fn do_form_and_modify_commands() {
+    let dir = std::env::temp_dir().join(format!("fost-forms-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Demo.fostform"), FORM).unwrap();
+    std::fs::write(dir.join("roto.fostform"), r#"{ "props": { "Nope": 1 } }"#).unwrap();
+    let mut it = Interp::default();
+    it.dir = dir.clone();
+
+    it.run("DO FORM demo WITH 'Eva' NAME f\n? f.Caption, f.cboColor.ListCount, f.cboColor.List(2)").unwrap();
+    assert_eq!(it.take_output(), "\nHola Eva 2 verde");
+    assert_eq!(it.forms_json().as_array().unwrap().len(), 1);
+    it.run("DO FORM demo NOSHOW").unwrap();
+    assert_eq!(it.forms_json().as_array().unwrap().len(), 1);
+
+    assert_eq!(it.run("DO FORM roto").unwrap_err().to_string(), "Línea 1: roto.fostform: Propiedad no encontrada: NOPE");
+    assert_eq!(it.run("DO FORM nada").unwrap_err().to_string(), "Línea 1: Formulario no encontrado: NADA");
+    assert_eq!(it.run_form(r#"{ "methods": { "Init": "IF .T." } }"#, "x").unwrap_err().to_string(), "x.Init, línea 1: IF sin cerrar");
+    // none of the failed forms was left behind
+    it.run("f.Release()").unwrap();
+    assert_eq!(it.forms_json().as_array().unwrap().len(), 0);
+
+    it.run("MODIFY FORM demo").unwrap();
+    let open = it.open.take().unwrap();
+    assert!(open.form);
+    assert_eq!(open.path, Some(dir.join("Demo.fostform")));
+    it.run("MODI COMM NuevoProg").unwrap();
+    assert_eq!(it.open.take().unwrap().path, Some(dir.join("nuevoprog.fost")));
+    it.run("MODIFY COMMAND").unwrap();
+    assert!(it.open.take().unwrap().path.is_none());
+    assert_eq!(it.run("CREATE TABLE x").unwrap_err().msg, "Esta variante de CREATE aún no está soportada");
+    std::fs::remove_dir_all(dir).unwrap();
+}

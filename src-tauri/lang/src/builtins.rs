@@ -11,12 +11,12 @@ pub const NAMES: &[&str] = &[
     "TRANSFORM", "CHRTRAN", "ISALPHA", "ISDIGIT", "ABS", "INT", "ROUND", "MOD", "MAX", "MIN", "SQRT", "CEILING",
     "FLOOR", "SIGN", "EXP", "LOG", "LOG10", "PI", "DATE", "TIME", "SECONDS", "CTOD", "DTOC", "DTOS", "YEAR", "MONTH",
     "DAY", "DOW", "CDOW", "CMONTH", "GOMONTH", "EMPTY", "ISNULL", "NVL", "BETWEEN", "INLIST", "ALEN", "IIF", "TYPE",
-    "VARTYPE", "EVALUATE", "RAND",
+    "VARTYPE", "EVALUATE", "RAND", "RGB", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT",
 ];
 
 /// Implemented by the interpreter, not by `call`.
 #[cfg(test)]
-const SPECIAL: &[&str] = &["IIF", "TYPE", "VARTYPE", "EVALUATE", "RAND"];
+const SPECIAL: &[&str] = &["IIF", "TYPE", "VARTYPE", "EVALUATE", "RAND", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT"];
 
 pub fn resolve(name: &str) -> Option<&'static str> {
     let exact = NAMES.iter().copied().find(|n| *n == name);
@@ -169,6 +169,8 @@ pub fn call(name: &str, a: &[Value]) -> Result<Value, String> {
         "LOG" => Num(n(0)?.ln()),
         "LOG10" => Num(n(0)?.log10()),
         "PI" => Num(std::f64::consts::PI),
+        // a colour as FoxPro stores it: red in the low byte
+        "RGB" => Num(n(0)?.clamp(0.0, 255.0).trunc() + n(1)?.clamp(0.0, 255.0).trunc() * 256.0 + n(2)?.clamp(0.0, 255.0).trunc() * 65536.0),
 
         "DATE" if a.is_empty() => Date(Some(Local::now().date_naive())),
         "DATE" => Date(NaiveDate::from_ymd_opt(n(0)? as i32, n(1)? as u32, n(2)? as u32)),
@@ -200,7 +202,7 @@ pub fn call(name: &str, a: &[Value]) -> Result<Value, String> {
             Str(x) => x.trim().is_empty(),
             Bool(b) => !b,
             Date(x) => x.is_none(),
-            Null | Array(_) => false,
+            Null | Array(_) | Object(_) => false,
         }),
         "ISNULL" => Bool(*v(0)? == Null),
         "NVL" => if *v(0)? == Null { v(1)? } else { v(0)? }.clone(),

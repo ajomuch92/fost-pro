@@ -1,6 +1,7 @@
 use crate::lexer::{Line, Tok, lex};
 use crate::value::Value;
 use crate::{Error, R, is_kw};
+use std::rc::Rc;
 
 #[derive(Debug)]
 pub enum Expr {
@@ -10,6 +11,12 @@ pub enum Expr {
     Ref(String),
     /// `name(args)` or `name[args]`: a function call or an array element, decided at run time.
     Call(String, Vec<Expr>),
+    /// `object.name`
+    Member(Box<Expr>, String),
+    /// `object.name(args)`: a method call, or an element of an array property.
+    Method(Box<Expr>, String, Vec<Expr>),
+    /// The object of the enclosing WITH block, as in `.Caption`.
+    WithObj,
     Un(&'static str, Box<Expr>),
     Bin(&'static str, Box<Expr>, Box<Expr>),
 }
@@ -20,6 +27,7 @@ pub struct Stmt {
     pub kind: Kind,
 }
 
+/// A name being declared, with its dimensions when it is an array.
 #[derive(Debug)]
 pub struct Target {
     pub name: String,
@@ -37,7 +45,8 @@ pub enum Scope {
 #[derive(Debug)]
 pub enum Kind {
     Print { newline: bool, exprs: Vec<Expr> },
-    Assign { targets: Vec<Target>, value: Expr },
+    /// Targets are the expressions that can be assigned: variables, array elements, properties.
+    Assign { targets: Vec<Expr>, value: Expr },
     Expr(Expr),
     Declare { scope: Scope, items: Vec<Target> },
     If { cond: Expr, then: Vec<Stmt>, els: Vec<Stmt> },
@@ -45,9 +54,13 @@ pub enum Kind {
     For { var: String, from: Expr, to: Expr, step: Option<Expr>, body: Vec<Stmt> },
     ForEach { var: String, iter: Expr, body: Vec<Stmt> },
     While { cond: Expr, body: Vec<Stmt> },
+    With { object: Expr, body: Vec<Stmt> },
     Loop,
     Exit,
     Do { name: String, args: Vec<Expr> },
+    DoForm { name: String, args: Vec<Expr>, var: Option<String>, show: bool },
+    /// MODIFY COMMAND, MODIFY FORM, CREATE FORM: ask the IDE to open a file.
+    Open { form: bool, name: Option<String> },
     Return(Option<Expr>),
     Params { local: bool, names: Vec<String> },
     /// Empty means RELEASE ALL.
@@ -57,14 +70,35 @@ pub enum Kind {
     Nop,
 }
 
+#[derive(Debug)]
 pub struct Routine {
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
 }
 
+/// An object added to a class with ADD OBJECT.
+pub struct Member {
+    pub name: String,
+    pub class: String,
+    pub props: Vec<(String, Expr)>,
+}
+
+pub struct ClassDef {
+    pub name: String,
+    /// Another user class, or a built-in one such as FORM.
+    pub parent: String,
+    /// `name = expr` and `child.name = expr`, in source order.
+    pub props: Vec<(String, Expr)>,
+    pub dims: Vec<Target>,
+    pub members: Vec<Member>,
+    /// Keyed by `NAME`, or `CHILD.NAME` for the event of an added object.
+    pub methods: Vec<(String, Rc<Routine>)>,
+}
+
 pub struct Program {
     pub main: Vec<Stmt>,
     pub routines: Vec<(String, Routine)>,
+    pub classes: Vec<ClassDef>,
 }
 
 // SET options that only affect the classic FoxPro UI, safe to accept and ignore
@@ -72,8 +106,10 @@ const SET_IGNORED: &[&str] = &[
     "TALK", "ECHO", "SAFETY", "STATUS", "BELL", "CONSOLE", "ESCAPE", "NOTIFY", "HEADINGS", "CONFIRM", "SCOREBOARD",
     "CURSOR", "SYSMENU", "RESOURCE", "HELP", "DEVELOPMENT", "CLOCK", "MESSAGE",
 ];
-const BLOCK_ENDS: &[&str] =
-    &["ENDIF", "ELSE", "ENDDO", "ENDFOR", "NEXT", "ENDCASE", "CASE", "OTHERWISE", "ENDPROC", "ENDFUNC"];
+const BLOCK_ENDS: &[&str] = &[
+    "ENDIF", "ELSE", "ENDDO", "ENDFOR", "NEXT", "ENDCASE", "CASE", "OTHERWISE", "ENDPROC", "ENDFUNC", "ENDWITH",
+    "ENDDEFINE",
+];
 const ROUTINE: &[&str] = &["PROCEDURE", "FUNCTION"];
 
 struct Parser {
@@ -85,34 +121,18 @@ struct Parser {
 
 pub fn parse(src: &str) -> R<Program> {
     let mut p = Parser { lines: lex(src)?, ln: 0, i: 0, loops: 0 };
-    let main = p.block(ROUTINE, None)?;
-    let mut routines = Vec::new();
+    let main = p.block(&["PROCEDURE", "FUNCTION", "DEFINE"], None)?;
+    let (mut routines, mut classes) = (Vec::new(), Vec::new());
     while !p.eof() {
-        if !ROUTINE.iter().any(|k| p.starts(k)) {
-            return p.fail("Después de un procedimiento solo puede ir otro PROCEDURE o FUNCTION");
+        if p.starts("DEFINE") {
+            classes.push(p.class()?);
+        } else if ROUTINE.iter().any(|k| p.starts(k)) {
+            routines.push(p.routine()?);
+        } else {
+            return p.fail("Después de un procedimiento o clase solo puede ir otro PROCEDURE, FUNCTION o DEFINE CLASS");
         }
-        p.i = 1;
-        let name = p.ident()?;
-        let mut params = Vec::new();
-        if p.eat_op("(") && !p.eat_op(")") {
-            loop {
-                params.push(p.ident()?);
-                p.skip_as()?;
-                if p.eat_op(")") {
-                    break;
-                }
-                p.expect_op(",")?;
-            }
-        }
-        p.skip_as()?;
-        p.eol()?;
-        let body = p.block(&["PROCEDURE", "FUNCTION", "ENDPROC", "ENDFUNC"], None)?;
-        if p.starts("ENDPROC") || p.starts("ENDFUNC") {
-            p.skip_line();
-        }
-        routines.push((name, Routine { params, body }));
     }
-    Ok(Program { main, routines })
+    Ok(Program { main, routines, classes })
 }
 
 pub fn parse_expr(src: &str) -> R<Expr> {
@@ -184,6 +204,15 @@ impl Parser {
         }
     }
 
+    /// `name` or `child.name`, joined with dots.
+    fn dotted(&mut self) -> R<String> {
+        let mut path = self.ident()?;
+        while self.eat_op(".") {
+            path = format!("{path}.{}", self.ident()?);
+        }
+        Ok(path)
+    }
+
     /// Accepts and ignores an `AS type` clause.
     fn skip_as(&mut self) -> R<()> {
         if self.eat_kw("AS") {
@@ -246,17 +275,100 @@ impl Parser {
         Ok(out)
     }
 
-    /// A name with optional subscripts: `x`, `a[1]`, `a(1, 2)`.
+    /// `PROCEDURE name[(params)]` or `FUNCTION ...`, with its body.
+    fn routine(&mut self) -> R<(String, Routine)> {
+        self.i = 1;
+        let name = self.dotted()?;
+        let mut params = Vec::new();
+        if self.eat_op("(") && !self.eat_op(")") {
+            loop {
+                params.push(self.ident()?);
+                self.skip_as()?;
+                if self.eat_op(")") {
+                    break;
+                }
+                self.expect_op(",")?;
+            }
+        }
+        self.skip_as()?;
+        self.eol()?;
+        let body = self.block(&["PROCEDURE", "FUNCTION", "ENDPROC", "ENDFUNC", "DEFINE", "ENDDEFINE"], None)?;
+        if self.starts("ENDPROC") || self.starts("ENDFUNC") {
+            self.skip_line();
+        }
+        Ok((name, Routine { params, body }))
+    }
+
+    /// `DEFINE CLASS name AS parent` up to ENDDEFINE.
+    fn class(&mut self) -> R<ClassDef> {
+        let line = self.line();
+        self.i = 1;
+        self.expect_kw("CLASS")?;
+        let name = self.ident()?;
+        self.expect_kw("AS")?;
+        let parent = self.ident()?;
+        self.skip_line();
+        let mut c = ClassDef { name, parent, props: Vec::new(), dims: Vec::new(), members: Vec::new(), methods: Vec::new() };
+        let prop = |p: &mut Self| {
+            let path = p.dotted()?;
+            p.expect_op("=")?;
+            Ok((path, p.expr()?))
+        };
+        loop {
+            if self.eof() {
+                return Err(Error::at(line, "DEFINE CLASS sin cerrar"));
+            }
+            if self.starts("ENDDEFINE") {
+                self.skip_line();
+                return Ok(c);
+            }
+            if ROUTINE.iter().any(|k| self.starts(k)) {
+                let (path, routine) = self.routine()?;
+                c.methods.push((path, Rc::new(routine)));
+            } else if self.starts("ADD") {
+                self.i = 1;
+                self.expect_kw("OBJECT")?;
+                let name = self.ident()?;
+                self.expect_kw("AS")?;
+                let class = self.ident()?;
+                self.eat_kw("NOINIT");
+                let props = if self.eat_kw("WITH") { self.list(prop)? } else { Vec::new() };
+                self.eol()?;
+                c.members.push(Member { name, class, props });
+            } else if self.starts("DIMENSION") || self.starts("DECLARE") {
+                self.i = 1;
+                c.dims.extend(self.list(Self::target)?);
+                self.eol()?;
+            } else if self.starts("PROTECTED") || self.starts("HIDDEN") {
+                // shortcut: every member is public, upgrade if programs rely on access errors
+                self.skip_line();
+            } else {
+                c.props.push(prop(self)?);
+                self.eol()?;
+            }
+        }
+    }
+
+    /// A name being declared, with optional dimensions: `x`, `a[3]`, `a(2, 2)`.
     fn target(&mut self) -> R<Target> {
         let name = self.ident()?;
-        let idx = if self.eat_op("(") {
-            self.args(")")?
-        } else if self.eat_op("[") {
-            self.args("]")?
-        } else {
-            Vec::new()
-        };
-        Ok(Target { name, idx })
+        Ok(Target { name, idx: self.subscript()?.unwrap_or_default() })
+    }
+
+    /// A statement that starts with something assignable: an assignment to it, or a call.
+    fn place_stmt(&mut self) -> R<Kind> {
+        let place = self.postfix()?;
+        if self.eat_op("=") {
+            let value = self.expr()?;
+            self.eol()?;
+            return Ok(Kind::Assign { targets: vec![place], value });
+        }
+        self.eol()?;
+        // `THISFORM.Release` without parentheses is still a call
+        Ok(Kind::Expr(match place {
+            Expr::Member(object, name) => Expr::Method(object, name, Vec::new()),
+            e => e,
+        }))
     }
 
     fn stmt(&mut self, line: usize) -> R<Kind> {
@@ -273,15 +385,13 @@ impl Parser {
                 self.eol()?;
                 return Ok(Kind::Expr(e));
             }
+            Some(Tok::Op("WITH.")) => return self.place_stmt(),
             Some(Tok::Ident(w)) => w,
             _ => return self.fail("Sentencia no válida. Para ver el valor de una expresión, escribe ? delante"),
         };
         let next = self.toks().get(1).cloned();
-        if next == Some(Tok::Op("=")) {
-            self.i = 2;
-            let value = self.expr()?;
-            self.eol()?;
-            return Ok(Kind::Assign { targets: vec![Target { name: word, idx: Vec::new() }], value });
+        if matches!(next, Some(Tok::Op("=" | "."))) {
+            return self.place_stmt();
         }
         let k = |kw: &str| is_kw(&word, kw);
         self.i = 1;
@@ -325,6 +435,23 @@ impl Parser {
             let cond = self.expr()?;
             self.eol()?;
             Kind::While { cond, body: self.loop_body(&["ENDDO"], ("DO WHILE", line))? }
+        } else if word == "DO" && self.at_kw("FORM") && matches!(self.toks().get(2), Some(Tok::Ident(_))) {
+            self.i = 2;
+            let name = self.ident()?;
+            let (mut args, mut var, mut show) = (Vec::new(), None, true);
+            loop {
+                if self.eat_kw("WITH") {
+                    args = self.list(Self::arg)?;
+                } else if self.eat_kw("NAME") {
+                    var = Some(self.ident()?);
+                } else if self.eat_kw("NOSHOW") {
+                    show = false;
+                } else if !self.eat_kw("LINKED") {
+                    break;
+                }
+            }
+            self.eol()?;
+            Kind::DoForm { name, args, var, show }
         } else if word == "DO" {
             let name = self.ident()?;
             let args = if self.eat_kw("WITH") { self.list(Self::arg)? } else { Vec::new() };
@@ -345,6 +472,12 @@ impl Parser {
             let step = if self.eat_kw("STEP") { Some(self.expr()?) } else { None };
             self.eol()?;
             Kind::For { var, from, to, step, body: self.loop_body(&["ENDFOR", "NEXT"], ("FOR", line))? }
+        } else if word == "WITH" {
+            let object = self.expr()?;
+            self.eol()?;
+            let body = self.block(&["ENDWITH"], Some(("WITH", line)))?;
+            self.skip_line();
+            Kind::With { object, body }
         } else if k("LOOP") || k("EXIT") {
             if self.loops == 0 {
                 return self.fail(format!("{word} fuera de un bucle"));
@@ -384,7 +517,7 @@ impl Parser {
         } else if k("STORE") {
             let value = self.expr()?;
             self.expect_kw("TO")?;
-            let targets = self.list(Self::target)?;
+            let targets = self.list(Self::postfix)?;
             self.eol()?;
             Kind::Assign { targets, value }
         } else if k("RELEASE") {
@@ -401,6 +534,18 @@ impl Parser {
             };
             self.skip_line();
             kind
+        } else if k("MODIFY") || k("CREATE") {
+            let form = self.eat_kw("FORM");
+            if !form && !(k("MODIFY") && self.eat_kw("COMMAND")) {
+                return self.fail(format!("Esta variante de {word} aún no está soportada"));
+            }
+            let name = if self.peek().is_some() { Some(self.ident()?) } else { None };
+            // an extension, if written, is ignored: the kind of file decides it
+            if self.eat_op(".") {
+                self.ident()?;
+            }
+            self.eol()?;
+            Kind::Open { form, name }
         } else if word == "SET" {
             let option = self.ident()?;
             if is_kw(&option, "EXACT") {
@@ -422,22 +567,14 @@ impl Parser {
             }
             self.skip_line();
             Kind::Nop
-        } else if ROUTINE.iter().any(|r| k(r)) {
+        } else if ROUTINE.iter().any(|r| k(r)) || k("DEFINE") {
             return self.fail(format!("{word} no puede ir dentro de un bloque"));
         } else if BLOCK_ENDS.iter().any(|e| k(e)) {
             return self.fail(format!("{word} sin su bloque de apertura"));
         } else if matches!(next, Some(Tok::Op("(" | "["))) {
             // `name(args)` alone is a call; followed by `=` it assigns an array element
             self.i = 0;
-            let t = self.target()?;
-            if self.eat_op("=") {
-                let value = self.expr()?;
-                self.eol()?;
-                Kind::Assign { targets: vec![t], value }
-            } else {
-                self.eol()?;
-                Kind::Expr(Expr::Call(t.name, t.idx))
-            }
+            return self.place_stmt();
         } else {
             return self.fail(format!("Comando no reconocido: {word}"));
         };
@@ -486,6 +623,23 @@ impl Parser {
                 return Ok(Expr::Un(op, Box::new(self.unary()?)));
             }
         }
+        self.postfix()
+    }
+
+    /// A primary followed by any number of `.member` or `.method(args)`.
+    fn postfix(&mut self) -> R<Expr> {
+        let mut e = if self.at_op("WITH.") { Expr::WithObj } else { self.primary()? };
+        while self.eat_op(".") || (matches!(e, Expr::WithObj) && self.eat_op("WITH.")) {
+            let name = self.ident()?;
+            e = match self.subscript()? {
+                Some(args) => Expr::Method(Box::new(e), name, args),
+                None => Expr::Member(Box::new(e), name),
+            };
+        }
+        Ok(e)
+    }
+
+    fn primary(&mut self) -> R<Expr> {
         let e = match self.peek().cloned() {
             Some(Tok::Num(n)) => Expr::Lit(Value::Num(n)),
             Some(Tok::Str(s)) => Expr::Lit(Value::Str(s)),
@@ -498,15 +652,28 @@ impl Parser {
                 self.expect_op(")")?;
                 return Ok(e);
             }
-            Some(Tok::Ident(_)) => {
-                let t = self.target()?;
-                let called = matches!(self.toks().get(self.i - 1), Some(Tok::Op(")" | "]")));
-                return Ok(if called { Expr::Call(t.name, t.idx) } else { Expr::Var(t.name) });
+            Some(Tok::Ident(name)) => {
+                self.i += 1;
+                return Ok(match self.subscript()? {
+                    Some(args) => Expr::Call(name, args),
+                    None => Expr::Var(name),
+                });
             }
             _ => return self.fail("Expresión no válida"),
         };
         self.i += 1;
         Ok(e)
+    }
+
+    /// `(args)` or `[args]`, if one follows.
+    fn subscript(&mut self) -> R<Option<Vec<Expr>>> {
+        Ok(if self.eat_op("(") {
+            Some(self.args(")")?)
+        } else if self.eat_op("[") {
+            Some(self.args("]")?)
+        } else {
+            None
+        })
     }
 
     fn arg(&mut self) -> R<Expr> {
