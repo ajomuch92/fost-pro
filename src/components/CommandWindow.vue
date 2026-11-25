@@ -3,7 +3,10 @@ import { nextTick, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 type Entry = { kind: "cmd" | "out" | "err"; text: string };
-type RunResult = { output: string; error: string | null; clear: boolean };
+type RunResult = { output: string; error: string | null; line: number | null; clear: boolean };
+
+/** Folder where DO looks for programs; null keeps the one used last. */
+const props = defineProps<{ dir: string | null }>();
 
 const entries = ref<Entry[]>([]);
 const input = ref("");
@@ -12,16 +15,19 @@ const log = ref<HTMLElement>();
 const history: string[] = [];
 let cursor = 0;
 
-async function run() {
-  const code = input.value;
-  if (!code.trim() || running.value) return;
-  history.push(code);
-  cursor = history.length;
-  input.value = "";
-  entries.value.push({ kind: "cmd", text: code });
+function report(text: string) {
+  entries.value.push({ kind: "err", text });
+  nextTick(() => log.value?.scrollTo(0, log.value.scrollHeight));
+}
+
+/** Runs `code`, showing `echo` as the command. Resolves to nothing if a program was already running. */
+async function execute(code: string, echo: string) {
+  if (running.value) return;
+  entries.value.push({ kind: "cmd", text: echo });
   running.value = true;
+  let r: RunResult | undefined;
   try {
-    const r = await invoke<RunResult>("run_code", { code });
+    r = await invoke<RunResult>("run_code", { code, dir: props.dir });
     if (r.clear) entries.value = [];
     // `?` prints its newline first, so the output starts with one
     if (r.output) entries.value.push({ kind: "out", text: r.output.replace(/^\n/, "") });
@@ -32,7 +38,19 @@ async function run() {
   running.value = false;
   await nextTick();
   log.value?.scrollTo(0, log.value.scrollHeight);
+  return r;
 }
+
+function run() {
+  const code = input.value;
+  if (!code.trim() || running.value) return;
+  history.push(code);
+  cursor = history.length;
+  input.value = "";
+  execute(code, code);
+}
+
+defineExpose({ execute, report });
 
 function recall(step: number, event: KeyboardEvent) {
   // in a multi-line command the arrows move the caret instead
@@ -49,7 +67,7 @@ function escape() {
 </script>
 
 <template>
-  <section class="flex h-full flex-col font-mono text-sm" aria-label="Ventana de comandos">
+  <section class="flex flex-col font-mono text-sm" aria-label="Ventana de comandos">
     <div ref="log" class="flex-1 overflow-y-auto p-3" role="log" aria-live="polite">
       <p v-if="!entries.length" class="text-neutral-500">
         Escribe un comando y pulsa Enter. Por ejemplo: ? "Hola", 2 + 2
