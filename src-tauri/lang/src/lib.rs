@@ -9,11 +9,13 @@ mod menu;
 mod object;
 mod objects;
 mod parser;
+mod project;
 mod value;
 
 pub use interp::{Host, Interp, Open};
 pub use help::reference;
 pub use object::class_info;
+pub use project::project;
 
 /// Stack size for the thread that owns an `Interp`. The interpreter recurses on the native
 /// stack, and 128 nested calls (the limit) overflow a default 2 MB thread in debug builds.

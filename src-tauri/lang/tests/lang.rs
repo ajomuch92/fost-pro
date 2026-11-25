@@ -797,3 +797,31 @@ fn forms_bound_to_data() {
     let forms = it.forms_json();
     assert_eq!((value(&forms, 0), forms[0]["children"][6]["grid"]["rows"].clone()), (json!("x"), json!([])));
 }
+
+#[test]
+fn a_project_lists_what_its_folder_holds() {
+    let dir = std::env::temp_dir().join(format!("fost-project-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // an empty folder is an empty project, and looking at it creates nothing
+    let empty = fost_lang::project(&dir);
+    assert_eq!(empty, serde_json::json!({ "programs": [], "forms": [], "classes": [], "tables": [] }));
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+
+    std::fs::write(dir.join("Main.fost"), "? 1\nDEFINE CLASS Ficha AS Form\nENDDEFINE").unwrap();
+    std::fs::write(dir.join("alta.fostform"), "{}").unwrap();
+    std::fs::write(dir.join("notas.txt"), "").unwrap();
+    let mut it = Interp::default();
+    it.dir = dir.clone();
+    it.run("CREATE TABLE clientes (nombre C(20), saldo N(10, 2))\nCREATE CURSOR temporal (x L)").unwrap();
+    // read while the interpreter still has the database open, as the IDE does
+    let project = fost_lang::project(&dir);
+    drop(it);
+    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(project["programs"], serde_json::json!(["Main.fost"]));
+    assert_eq!(project["forms"], serde_json::json!(["alta.fostform"]));
+    assert_eq!(project["classes"], serde_json::json!([{ "name": "Ficha", "parent": "Form", "file": "Main.fost", "line": 2 }]));
+    // cursors live in memory: they are not part of the project
+    assert_eq!(project["tables"].as_array().unwrap().len(), 1);
+    assert_eq!(project["tables"][0]["name"], "CLIENTES");
+    assert_eq!(project["tables"][0]["fields"][1], serde_json::json!({ "name": "SALDO", "kind": "N", "width": 10, "decimals": 2 }));
+}

@@ -80,6 +80,28 @@ pub(crate) struct Data {
     tags: HashMap<String, Vec<Tag>>,
 }
 
+/// The tables saved in the folder `dir`, each with its fields, for a project panel.
+/// Only reads: a folder with no database gets none, and none is created.
+pub(crate) fn tables(dir: &std::path::Path) -> Vec<Json> {
+    let read = || -> rusqlite::Result<Vec<(String, Json)>> {
+        let conn = Connection::open_with_flags(dir.join(FILE), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let mut stmt = conn.prepare("SELECT tbl, name, kind, width, decimals FROM _fost_fields ORDER BY tbl, pos")?;
+        let rows = stmt.query_map([], |r| {
+            let field = json!({ "name": r.get::<_, String>(1)?, "kind": r.get::<_, String>(2)?, "width": r.get::<_, i64>(3)?, "decimals": r.get::<_, i64>(4)? });
+            Ok((r.get(0)?, field))
+        })?;
+        rows.collect()
+    };
+    let mut out: Vec<Json> = Vec::new();
+    for (table, field) in read().unwrap_or_default() {
+        match out.last_mut().filter(|t| t["name"] == table.as_str()) {
+            Some(last) => last["fields"].as_array_mut().unwrap().push(field),
+            None => out.push(json!({ "name": table, "fields": [field] })),
+        }
+    }
+    out
+}
+
 fn blank(f: &FieldDef) -> Value {
     match f.kind {
         'C' => Value::Str(" ".repeat(f.width)),

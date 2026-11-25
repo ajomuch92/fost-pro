@@ -1,5 +1,5 @@
 // The one place that talks to the interpreter, and the state every panel shows from it.
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -57,6 +57,30 @@ export const pending = ref(0);
 /** Folder where DO and DO FORM look for files; null keeps the one used last. */
 export const dir = ref<string | null>(null);
 export const classes = ref<ClassInfo[]>([]);
+
+/** The stored value under `key`, or null where the browser keeps none. */
+function remembered(key: string) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+/** Folder of the open project: a project is a folder. Remembered between sessions. */
+export const project = ref<string | null>(remembered("fost-project"));
+watch(
+  project,
+  (p) => {
+    // DO, DO FORM and the tables work in the project's folder
+    if (p) dir.value = p;
+    try {
+      p ? localStorage.setItem("fost-project", p) : localStorage.removeItem("fost-project");
+    } catch {
+      // not remembered, nothing else is lost
+    }
+  },
+  { immediate: true },
+);
 /** Whether the help screen is showing. */
 export const helpOpen = ref(false);
 /** An INPUTBOX() a running program is waiting on. */

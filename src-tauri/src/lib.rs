@@ -93,6 +93,12 @@ fn class_info() -> Json {
     fost_lang::class_info()
 }
 
+/// What the project panel lists for a folder.
+#[tauri::command]
+fn project_info(dir: String) -> Json {
+    fost_lang::project(std::path::Path::new(&dir))
+}
+
 #[tauri::command]
 fn reference() -> Json {
     fost_lang::reference()
@@ -229,7 +235,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            run_code, run_form, ui_event, menu_event, stop_code, answer_prompt, class_info, reference, read_file, read_binary, write_file
+            run_code, run_form, ui_event, menu_event, stop_code, answer_prompt, class_info, reference, project_info, read_file, read_binary, write_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

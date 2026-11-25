@@ -3,13 +3,14 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { AppWindow, CircleQuestionMark, FilePlus, FolderOpen, Play, Save } from "@lucide/vue";
-import { dir, helpOpen, openRequest, report, run, runForm } from "./engine";
+import { AppWindow, CircleQuestionMark, FilePlus, FolderKanban, FolderOpen, Play, Save } from "@lucide/vue";
+import { dir, helpOpen, openRequest, project, report, run, runForm } from "./engine";
 import CommandWindow from "./components/CommandWindow.vue";
 import FormDesigner from "./components/FormDesigner.vue";
 import FormLayer from "./components/FormLayer.vue";
 import MenuBar from "./components/MenuBar.vue";
 import HelpScreen from "./components/HelpScreen.vue";
+import ProjectPanel from "./components/ProjectPanel.vue";
 import PromptDialog from "./components/PromptDialog.vue";
 import ProgramEditor from "./components/ProgramEditor.vue";
 
@@ -23,6 +24,7 @@ const kindOf = (file: string): Kind => (/\.fostform$/i.test(file) ? "form" : "pr
 
 const editor = ref<InstanceType<typeof ProgramEditor>>();
 const designer = ref<InstanceType<typeof FormDesigner>>();
+const panel = ref<InstanceType<typeof ProjectPanel>>();
 const kind = ref<Kind>("program");
 const path = ref<string | null>(null);
 const dirty = ref(false);
@@ -86,13 +88,31 @@ const saveFile = () =>
   attempt(async () => {
     const { extension, label, untitled } = kinds[kind.value];
     const filters = [{ name: label, extensions: [extension] }];
-    let target = path.value ?? (await saveDialog({ filters, defaultPath: `${untitled}.${extension}` }));
+    // a new file is offered next to the others of the project
+    const folder = dir.value ? `${dir.value}/` : "";
+    let target = path.value ?? (await saveDialog({ filters, defaultPath: `${folder}${untitled}.${extension}` }));
     if (!target) return;
     // the extension decides how the file is opened and run, so it is not optional
     if (kindOf(target) !== kind.value || !/\.fost(form)?$/i.test(target)) target += `.${extension}`;
     await invoke("write_file", { path: target, text: view(kind.value).getText() });
     path.value = target;
     dirty.value = false;
+    panel.value?.refresh();
+  });
+
+/** A project is a folder: the one chosen here, which the dialog can also create. */
+const openProject = () =>
+  attempt(async () => {
+    const chosen = await open({ directory: true, title: "Carpeta del proyecto" });
+    if (chosen) project.value = chosen;
+  });
+
+/** Opens a file of the project from its panel; `line` is where a class is defined. */
+const openFromProject = (file: string, line?: number) =>
+  attempt(async () => {
+    if (!(await canDiscard())) return;
+    await load(`${project.value}/${file}`);
+    if (line) editor.value!.gotoLine(line);
   });
 
 async function runDoc() {
@@ -153,6 +173,7 @@ const button = "flex items-center gap-1.5 rounded px-2 py-1 hover:bg-neutral-200
     <header class="flex items-center gap-1 border-b border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700">
       <button type="button" :class="button" @click="newDoc('program')"><FilePlus :size="16" aria-hidden="true" />Nuevo programa</button>
       <button type="button" :class="button" @click="newDoc('form')"><AppWindow :size="16" aria-hidden="true" />Nuevo formulario</button>
+      <button type="button" :class="button" title="Abrir o crear la carpeta de un proyecto" @click="openProject"><FolderKanban :size="16" aria-hidden="true" />Proyecto</button>
       <button type="button" :class="button" title="Ctrl+O" @click="openFile"><FolderOpen :size="16" aria-hidden="true" />Abrir</button>
       <button type="button" :class="button" title="Ctrl+S" @click="saveFile"><Save :size="16" aria-hidden="true" />Guardar</button>
       <button type="button" :class="button" title="F5" @click="runDoc"><Play :size="16" aria-hidden="true" />Ejecutar (F5)</button>
@@ -160,13 +181,16 @@ const button = "flex items-center gap-1.5 rounded px-2 py-1 hover:bg-neutral-200
       <span class="ml-auto text-neutral-500">{{ name }}{{ dirty ? " (sin guardar)" : "" }}</span>
     </header>
     <MenuBar />
-    <div class="relative flex min-h-0 flex-1 flex-col">
+    <div class="flex min-h-0 flex-1">
+    <ProjectPanel ref="panel" @open="openFromProject" />
+    <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <ProgramEditor v-show="kind === 'program'" ref="editor" class="min-h-0 flex-1" @change="dirty = true" />
       <FormDesigner v-show="kind === 'form'" ref="designer" class="min-h-0 flex-1" @change="dirty = true" />
       <CommandWindow class="h-1/3 border-t border-neutral-300 dark:border-neutral-700" />
       <FormLayer />
       <HelpScreen />
       <PromptDialog />
+    </div>
     </div>
   </main>
 </template>

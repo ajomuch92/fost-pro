@@ -25,7 +25,8 @@ el SQL.
 | Tablas: `USE`, `REPLACE`, `SCAN`, `SEEK`, índices, áreas de trabajo | Hecho, primera entrega |
 | Formularios enlazados a datos (`ControlSource`, `Grid`) | Hecho, primera versión |
 | SQL (`SELECT`, `UPDATE`, `DELETE FROM`), `BROWSE` | Pendiente |
-| Proyectos y migrador desde FoxPro | Pendiente |
+| Proyectos: una carpeta, con panel de programas, formularios, clases y tablas | Hecho, primera versión |
+| Migrador desde FoxPro | Pendiente |
 | Reportes, ejecutables | Sin planear todavía |
 
 ### Qué funciona
@@ -60,6 +61,9 @@ el SQL.
   separadores (`\-`), letra subrayada (`\<`), `SKIP FOR` y las funciones `BAR()`, `PROMPT()`, `POPUP()`,
   `PAD()` y `MENU()`. Los menús se dibujan en una barra bajo la de herramientas; lo definido en
   `_MSYSMENU` aparece sin activarlo, como el código que genera el diseñador de menús de FoxPro.
+- **Proyectos:** un proyecto es una carpeta. El botón Proyecto la abre (o la crea desde el diálogo) y un
+  panel lateral lista sus programas, formularios, clases (`DEFINE CLASS`, con un clic va a su línea) y
+  tablas con sus campos. `DO`, `DO FORM` y las tablas trabajan en esa carpeta.
 - **IDE:** editor con resaltado, diseñador de formularios (arrastrar, redimensionar, propiedades, código
   por evento; los controles se arrastran dentro y fuera de contenedores y pestañas), ventana de comandos
   con historial, y
@@ -163,5 +167,5 @@ sin error y por qué fallan las demás. Hoy pasan 7 de 34.
 
 1. Más base de datos: `SELECT` y demás SQL, `BROWSE`, órdenes que se conserven, filtros y relaciones.
 2. Más enlace a datos: `Grid` editable con columnas, entorno de datos, listas llenas desde tablas.
-3. Proyectos, y el migrador que convierte un proyecto de FoxPro (`.prg`, `.dbf`, `.scx`) e informa de lo
+3. El migrador que convierte un proyecto de FoxPro (`.prg`, `.dbf`, `.scx`) e informa de lo
    que no pudo convertir.
