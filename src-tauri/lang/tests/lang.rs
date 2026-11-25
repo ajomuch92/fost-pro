@@ -377,3 +377,17 @@ fn do_form_and_modify_commands() {
     assert_eq!(it.run("CREATE TABLE x").unwrap_err().msg, "Esta variante de CREATE aún no está soportada");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn help_and_inputbox() {
+    let mut it = Interp::default();
+    // with no UI, INPUTBOX answers its default
+    it.run("? INPUTBOX('Nombre', 'Datos', 'Ana') + '|' + INPUTBOX('x')\nHELP").unwrap();
+    assert_eq!(it.take_output(), "\nAna|");
+    assert!(it.help);
+    let reference = fost_lang::reference();
+    assert!(reference["commands"].as_array().unwrap().len() > 30);
+    assert_eq!(reference["functions"][0]["syntax"], "LEN(texto)");
+    it.run("f = CREATEOBJECT('Form')\n? f.MinButton, f.MaxButton, f.WindowState").unwrap();
+    assert_eq!(it.take_output(), "\n.T. .T. 0");
+}

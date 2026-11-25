@@ -2,6 +2,7 @@
 
 mod builtins;
 mod interp;
+mod help;
 mod lexer;
 mod object;
 mod objects;
@@ -9,6 +10,7 @@ mod parser;
 mod value;
 
 pub use interp::{Host, Interp, Open};
+pub use help::reference;
 pub use object::class_info;
 
 /// Stack size for the thread that owns an `Interp`. The interpreter recurses on the native

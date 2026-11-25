@@ -22,6 +22,12 @@ pub trait Host {
     fn message_box(&mut self, _text: &str, _buttons: i64, _title: &str) -> Option<i64> {
         None
     }
+
+    /// Asks INPUTBOX()'s question and returns what the user typed, empty if they cancelled.
+    /// None means there is no UI to ask on.
+    fn input_box(&mut self, _prompt: &str, _title: &str, _default: &str) -> Option<String> {
+        None
+    }
 }
 
 impl Host for () {}
@@ -83,6 +89,8 @@ pub struct Interp {
     pub focus: Option<u64>,
     /// Set by MODIFY COMMAND and friends; the host should open that file.
     pub open: Option<Open>,
+    /// Set by HELP; the host should show the reference.
+    pub help: bool,
     pub host: Box<dyn Host>,
 }
 
@@ -103,6 +111,7 @@ impl Default for Interp {
             next_id: 0,
             focus: None,
             open: None,
+            help: false,
             host: Box::new(()),
         }
     }
@@ -415,6 +424,7 @@ impl Interp {
                     self.decimals = n as usize;
                 }
             },
+            Kind::Help => self.help = true,
             Kind::Nop => {}
         }
         Ok(Flow::Next)
@@ -648,6 +658,16 @@ impl Interp {
                     1
                 });
                 Value::Num(answer as f64)
+            }
+            "INPUTBOX" => {
+                let mut texts = Vec::new();
+                for a in args.iter().take(3) {
+                    texts.push(self.eval(a)?.display());
+                }
+                texts.resize(3, String::new());
+                // no UI: answer with the default
+                let answer = self.host.input_box(&texts[0], &texts[1], &texts[2]).unwrap_or_else(|| texts[2].clone());
+                Value::Str(answer)
             }
             _ => {
                 let mut vals = Vec::new();

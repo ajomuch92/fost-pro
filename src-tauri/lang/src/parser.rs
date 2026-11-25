@@ -67,6 +67,8 @@ pub enum Kind {
     Release(Vec<String>),
     Clear,
     Set(&'static str, Expr),
+    /// HELP: ask the IDE to show the reference.
+    Help,
     Nop,
 }
 
@@ -546,6 +548,9 @@ impl Parser {
             }
             self.eol()?;
             Kind::Open { form, name }
+        } else if word == "HELP" {
+            self.skip_line();
+            Kind::Help
         } else if word == "SET" {
             let option = self.ident()?;
             if is_kw(&option, "EXACT") {

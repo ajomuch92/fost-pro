@@ -11,12 +11,12 @@ pub const NAMES: &[&str] = &[
     "TRANSFORM", "CHRTRAN", "ISALPHA", "ISDIGIT", "ABS", "INT", "ROUND", "MOD", "MAX", "MIN", "SQRT", "CEILING",
     "FLOOR", "SIGN", "EXP", "LOG", "LOG10", "PI", "DATE", "TIME", "SECONDS", "CTOD", "DTOC", "DTOS", "YEAR", "MONTH",
     "DAY", "DOW", "CDOW", "CMONTH", "GOMONTH", "EMPTY", "ISNULL", "NVL", "BETWEEN", "INLIST", "ALEN", "IIF", "TYPE",
-    "VARTYPE", "EVALUATE", "RAND", "RGB", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT",
+    "VARTYPE", "EVALUATE", "RAND", "RGB", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX",
 ];
 
 /// Implemented by the interpreter, not by `call`.
 #[cfg(test)]
-const SPECIAL: &[&str] = &["IIF", "TYPE", "VARTYPE", "EVALUATE", "RAND", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT"];
+const SPECIAL: &[&str] = &["IIF", "TYPE", "VARTYPE", "EVALUATE", "RAND", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX"];
 
 pub fn resolve(name: &str) -> Option<&'static str> {
     let exact = NAMES.iter().copied().find(|n| *n == name);
@@ -229,6 +229,16 @@ mod tests {
     use super::*;
 
     // NAMES drives name resolution and `call` does the work: they must not drift apart
+    // the help screen must list exactly what exists
+    #[test]
+    fn every_name_is_documented() {
+        let mut documented: Vec<&str> = crate::help::FUNCTIONS.iter().map(|(_, syntax, _)| crate::help::function_name(syntax)).collect();
+        let mut names = NAMES.to_vec();
+        documented.sort();
+        names.sort();
+        assert_eq!(documented, names);
+    }
+
     #[test]
     fn every_name_is_implemented() {
         for name in NAMES.iter().filter(|n| !SPECIAL.contains(n)) {

@@ -112,7 +112,19 @@ pub fn base(key: &str) -> Option<Base> {
         "FORM" => (
             "FORM",
             "Form",
-            visual(375.0, 250.0, vec![("Caption", s("Form1")), ("Visible", Bool(false)), ("BackColor", Num(GRAY))]),
+            visual(
+                375.0,
+                250.0,
+                vec![
+                    ("Caption", s("Form1")),
+                    ("Visible", Bool(false)),
+                    ("BackColor", Num(GRAY)),
+                    ("MinButton", Bool(true)),
+                    ("MaxButton", Bool(true)),
+                    // 0 normal, 1 minimized, 2 maximized
+                    ("WindowState", Num(0.0)),
+                ],
+            ),
             &["Load", "Init", "Click", "Destroy"],
         ),
         "LABEL" => ("LABEL", "Label", visual(40.0, 17.0, vec![("Caption", s("Label1"))]), &["Init", "Click", "Destroy"]),
