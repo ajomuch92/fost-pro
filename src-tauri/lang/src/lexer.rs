@@ -1,6 +1,7 @@
 use crate::value::parse_date;
 use crate::{Error, R};
 use chrono::NaiveDate;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
@@ -44,7 +45,7 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
         if toks.is_empty() {
             start = no;
         }
-        let fail = |msg: &str| Err(Error { line: no, msg: msg.into() });
+        let fail = |msg: &str| Err(Error::at(no, msg));
         match ch {
             '\n' => {
                 if !toks.is_empty() {
@@ -176,5 +177,32 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
     if !toks.is_empty() {
         lines.push(Line { no: start, toks });
     }
-    Ok(lines)
+
+    // `#DEFINE NAME tokens` replaces NAME, token by token, on the lines that follow
+    let mut defines: HashMap<String, Vec<Tok>> = HashMap::new();
+    let mut out = Vec::new();
+    for mut line in lines {
+        let expand = |toks: &[Tok]| -> Vec<Tok> {
+            let swap = |t: &Tok| match t {
+                Tok::Ident(w) if defines.contains_key(w) => defines[w].clone(),
+                _ => vec![t.clone()],
+            };
+            toks.iter().flat_map(swap).collect()
+        };
+        if line.toks[0] == Tok::Op("#") {
+            match &line.toks[1..] {
+                [Tok::Ident(d), Tok::Ident(name), body @ ..] if d == "DEFINE" => {
+                    let body = expand(body);
+                    defines.insert(name.clone(), body);
+                }
+                _ => return Err(Error::at(line.no, "Directiva de preprocesador aún no soportada")),
+            }
+            continue;
+        }
+        if !defines.is_empty() {
+            line.toks = expand(&line.toks);
+        }
+        out.push(line);
+    }
+    Ok(out)
 }

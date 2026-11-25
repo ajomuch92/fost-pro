@@ -156,9 +156,15 @@ fn errors_point_at_the_line() {
     assert_eq!(run("IF .T.\n? 1"), "!Línea 1: IF sin cerrar");
     assert_eq!(run("? 1\nENDIF"), "!Línea 2: ENDIF sin su bloque de apertura");
     assert_eq!(run("BROWSE"), "!Línea 1: Comando no reconocido: BROWSE");
-    assert_eq!(run("SET EXACT ON"), "!Línea 1: SET EXACT aún no está soportado");
+    assert_eq!(run("SET DATE DMY"), "!Línea 1: SET DATE aún no está soportado");
     assert_eq!(run("? 'a'\n? nope(1)"), "a!Línea 2: Función no encontrada: NOPE");
-    assert_eq!(run("? deep(1)\nFUNCTION deep(n)\nRETURN deep(n + 1)"), "!Línea 3: Demasiadas llamadas anidadas (máximo 128)");
+}
+
+#[test]
+fn runaway_recursion_is_an_error_not_a_crash() {
+    let deep = || run("? deep(1)\nFUNCTION deep(n)\nRETURN deep(n + 1)");
+    let out = std::thread::Builder::new().stack_size(fost_lang::STACK_SIZE).spawn(deep).unwrap().join().unwrap();
+    assert_eq!(out, "!Línea 3: Demasiadas llamadas anidadas (máximo 128)");
 }
 
 #[test]
@@ -182,4 +188,35 @@ fn stop_flag_interrupts_a_loop() {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
     });
     assert_eq!(it.run("DO WHILE .T.\nENDDO").unwrap_err().msg, "Ejecución interrumpida");
+}
+
+#[test]
+fn define_and_set() {
+    assert_eq!(run("#DEFINE TAB CHR(65)\n#DEFINE TWICE TAB + TAB\n? TWICE"), "AA");
+    assert_eq!(run("#IF .T."), "!Línea 1: Directiva de preprocesador aún no soportada");
+    assert_eq!(run("? 'abc' = 'ab', 'ab ' = 'ab'\nSET EXACT ON\n? 'abc' = 'ab', 'ab ' = 'ab', 'abc' <> 'ab'"), ".T. .T.\n.F. .T. .T.");
+    assert_eq!(run("SET DECIMALS TO 2\n? 1 / 3, 2 / 3, 10 / 4, 5\nSET DECI TO 0\n? 2.5, 50"), "0.33 0.67 2.5 5\n3 50");
+    assert_eq!(run("2 + 2"), "!Línea 1: Sentencia no válida. Para ver el valor de una expresión, escribe ? delante");
+}
+
+#[test]
+fn do_runs_a_program_file_and_errors_name_their_origin() {
+    let dir = std::env::temp_dir().join(format!("fost-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Saluda.fost"), "PARAMETERS quien\n? 'Hola ' + quien\nDO helper\n\nPROCEDURE helper\n? 1 / 0\n").unwrap();
+    std::fs::write(dir.join("roto.fost"), "IF .T.\n").unwrap();
+    let mut it = Interp::default();
+    it.dir = dir.clone();
+
+    let e = it.run("x = 1\nDO saluda WITH 'Ana'").unwrap_err();
+    assert_eq!(it.take_output(), "\nHola Ana");
+    assert_eq!(e.to_string(), "Saluda.fost, línea 6: División entre cero");
+    assert_eq!(it.run("DO roto").unwrap_err().to_string(), "roto.fost, línea 1: IF sin cerrar");
+    assert_eq!(it.run("DO nada").unwrap_err().to_string(), "Línea 1: Procedimiento o programa no encontrado: NADA");
+
+    // a routine kept from an earlier run must not report its lines as if they were in the new source
+    it.run("FUNCTION boom\nRETURN 1 / 0").unwrap();
+    assert_eq!(it.run("? 1\n? boom()").unwrap_err().to_string(), "un comando anterior, línea 2: División entre cero");
+    assert_eq!(it.run("? nope").unwrap_err().file, None);
+    std::fs::remove_dir_all(dir).unwrap();
 }

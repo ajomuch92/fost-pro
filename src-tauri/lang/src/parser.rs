@@ -53,6 +53,7 @@ pub enum Kind {
     /// Empty means RELEASE ALL.
     Release(Vec<String>),
     Clear,
+    Set(&'static str, Expr),
     Nop,
 }
 
@@ -141,7 +142,7 @@ impl Parser {
     }
 
     fn fail<T>(&self, msg: impl Into<String>) -> R<T> {
-        Err(Error { line: self.line(), msg: msg.into() })
+        Err(Error::at(self.line(), msg))
     }
 
     fn at_op(&self, op: &str) -> bool {
@@ -217,7 +218,7 @@ impl Parser {
         loop {
             if self.eof() {
                 return match opener {
-                    Some((name, line)) => Err(Error { line, msg: format!("{name} sin cerrar") }),
+                    Some((name, line)) => Err(Error::at(line, format!("{name} sin cerrar"))),
                     None => Ok(out),
                 };
             }
@@ -273,7 +274,7 @@ impl Parser {
                 return Ok(Kind::Expr(e));
             }
             Some(Tok::Ident(w)) => w,
-            _ => return self.fail("Sentencia no válida"),
+            _ => return self.fail("Sentencia no válida. Para ver el valor de una expresión, escribe ? delante"),
         };
         let next = self.toks().get(1).cloned();
         if next == Some(Tok::Op("=")) {
@@ -314,7 +315,7 @@ impl Parser {
                     self.skip_line();
                     break;
                 } else if self.eof() {
-                    return Err(Error { line, msg: "DO CASE sin cerrar".into() });
+                    return Err(Error::at(line, "DO CASE sin cerrar"));
                 } else {
                     return self.fail("Se esperaba CASE, OTHERWISE o ENDCASE");
                 }
@@ -402,6 +403,20 @@ impl Parser {
             kind
         } else if word == "SET" {
             let option = self.ident()?;
+            if is_kw(&option, "EXACT") {
+                let on = self.eat_kw("ON");
+                if !on && !self.eat_kw("OFF") {
+                    return self.fail("Se esperaba ON u OFF");
+                }
+                self.eol()?;
+                return Ok(Kind::Set("EXACT", Expr::Lit(Value::Bool(on))));
+            }
+            if is_kw(&option, "DECIMALS") {
+                self.expect_kw("TO")?;
+                let n = if self.peek().is_some() { self.expr()? } else { Expr::Lit(Value::Num(10.0)) };
+                self.eol()?;
+                return Ok(Kind::Set("DECIMALS", n));
+            }
             if !SET_IGNORED.iter().any(|o| is_kw(&option, o)) {
                 return self.fail(format!("SET {option} aún no está soportado"));
             }

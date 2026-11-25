@@ -1,8 +1,9 @@
 use crate::parser::{Expr, Kind, Routine, Scope, Stmt, Target, parse, parse_expr};
-use crate::value::{Array, Value, binary, unary};
+use crate::value::{Array, Value, binary, fmt_num, unary};
 use crate::{Error, R, builtins, err};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +33,12 @@ enum Flow {
 
 /// Keeps variables and routines between `run` calls, so it can back a command window.
 pub struct Interp {
-    routines: HashMap<String, Rc<Routine>>,
+    /// name -> (routine, where it was defined; None for the source being run now).
+    routines: HashMap<String, (Rc<Routine>, Option<String>)>,
+    /// Where `DO name` looks for `name.fost`.
+    pub dir: PathBuf,
+    exact: bool,
+    decimals: usize,
     /// frames[0] is the top level; PUBLIC variables live there.
     frames: Vec<Frame>,
     out: String,
@@ -47,6 +53,9 @@ impl Default for Interp {
     fn default() -> Self {
         Interp {
             routines: HashMap::new(),
+            dir: PathBuf::from("."),
+            exact: false,
+            decimals: 10,
             frames: vec![Frame::default()],
             out: String::new(),
             clear: false,
@@ -59,8 +68,12 @@ impl Default for Interp {
 impl Interp {
     pub fn run(&mut self, src: &str) -> Result<(), Error> {
         let prog = parse(src)?;
+        // line numbers of routines kept from earlier runs no longer refer to `src`
+        for (_, origin) in self.routines.values_mut() {
+            origin.get_or_insert_with(|| "un comando anterior".into());
+        }
         for (name, routine) in prog.routines {
-            self.routines.insert(name, Rc::new(routine));
+            self.routines.insert(name, (Rc::new(routine), None));
         }
         self.stop.store(false, Ordering::Relaxed);
         let res = self.block(&prog.main);
@@ -149,7 +162,10 @@ impl Interp {
             Kind::Print { newline, exprs } => {
                 let mut parts = Vec::new();
                 for e in exprs {
-                    parts.push(self.eval(e)?.display());
+                    parts.push(match self.eval(e)? {
+                        Value::Num(n) => fmt_num(n, self.decimals),
+                        v => v.display(),
+                    });
                 }
                 if *newline {
                     self.out.push('\n');
@@ -251,8 +267,9 @@ impl Interp {
             Kind::Loop => return Ok(Flow::Loop),
             Kind::Exit => return Ok(Flow::Exit),
             Kind::Do { name, args } => {
-                let Some(routine) = self.routines.get(name).cloned() else {
-                    return Err(err(format!("Procedimiento no encontrado: {name}")));
+                let (routine, origin) = match self.routines.get(name).cloned() {
+                    Some(found) => found,
+                    None => self.load(name)?,
                 };
                 // DO ... WITH passes plain variables by reference
                 let mut refs = Vec::new();
@@ -262,7 +279,7 @@ impl Interp {
                         _ => var(self.eval(a)?),
                     });
                 }
-                self.call(routine, refs)?;
+                self.call(routine, origin, refs)?;
             }
             Kind::Return(e) => {
                 return Ok(Flow::Return(match e {
@@ -297,9 +314,41 @@ impl Interp {
                 self.out.clear();
                 self.clear = true;
             }
+            Kind::Set(option, value) => match *option {
+                "EXACT" => self.exact = self.truthy(value)?,
+                _ => {
+                    let n = self.num(value)?;
+                    if !(0.0..=18.0).contains(&n) {
+                        return Err(err("SET DECIMALS admite de 0 a 18"));
+                    }
+                    self.decimals = n as usize;
+                }
+            },
             Kind::Nop => {}
         }
         Ok(Flow::Next)
+    }
+
+    /// Reads `name.fost` from `dir` for DO. Its procedures become available to everyone.
+    // shortcut: bare names in one directory only; upgrade when SET PATH or `DO path\file` is needed
+    fn load(&mut self, name: &str) -> R<(Rc<Routine>, Option<String>)> {
+        let wanted = format!("{name}.FOST");
+        // the lexer upper-cased the name, so match the file name ignoring case
+        let entries = std::fs::read_dir(&self.dir).ok().into_iter().flatten().flatten();
+        let file = entries.map(|e| e.file_name().to_string_lossy().into_owned()).find(|f| f.to_uppercase() == wanted);
+        let Some(file) = file else {
+            return Err(err(format!("Procedimiento o programa no encontrado: {name}")));
+        };
+        let tag = |mut e: Error| {
+            e.file.get_or_insert_with(|| file.clone());
+            e
+        };
+        let src = std::fs::read_to_string(self.dir.join(&file)).map_err(|e| err(format!("No se pudo leer {file}: {e}")))?;
+        let prog = parse(&src).map_err(tag)?;
+        for (name, routine) in prog.routines {
+            self.routines.insert(name, (Rc::new(routine), Some(file.clone())));
+        }
+        Ok((Rc::new(Routine { params: Vec::new(), body: prog.main }), Some(file)))
     }
 
     fn assign(&mut self, t: &Target, v: Value) -> R<()> {
@@ -328,7 +377,7 @@ impl Interp {
         Ok(())
     }
 
-    fn call(&mut self, routine: Rc<Routine>, args: Vec<VarRef>) -> R<Value> {
+    fn call(&mut self, routine: Rc<Routine>, origin: Option<String>, args: Vec<VarRef>) -> R<Value> {
         // 128 nested DO levels is also FoxPro's limit
         if self.frames.len() >= 128 {
             return Err(err("Demasiadas llamadas anidadas (máximo 128)"));
@@ -350,6 +399,12 @@ impl Interp {
         self.frames.push(frame);
         let res = self.block(&routine.body);
         self.frames.pop();
+        let res = res.map_err(|mut e| {
+            if e.file.is_none() {
+                e.file = origin;
+            }
+            e
+        });
         Ok(match res? {
             Flow::Return(v) => v,
             _ => Value::Bool(true),
@@ -369,7 +424,7 @@ impl Interp {
             }
             Expr::Bin(op, l, r) => {
                 let a = self.eval(l)?;
-                binary(op, a, self.eval(r)?)?
+                binary(op, a, self.eval(r)?, self.exact)?
             }
             Expr::Call(name, args) => self.call_expr(name, args)?,
         })
@@ -384,7 +439,7 @@ impl Interp {
                 return Ok(a.data[a.offset(&idx)?].clone());
             }
         }
-        if let Some(routine) = self.routines.get(name).cloned() {
+        if let Some((routine, origin)) = self.routines.get(name).cloned() {
             let mut refs = Vec::new();
             for a in args {
                 refs.push(match a {
@@ -392,7 +447,7 @@ impl Interp {
                     _ => var(self.eval(a)?),
                 });
             }
-            return self.call(routine, refs);
+            return self.call(routine, origin, refs);
         }
         let Some(full) = builtins::resolve(name) else {
             return Err(err(format!("Función no encontrada: {name}")));

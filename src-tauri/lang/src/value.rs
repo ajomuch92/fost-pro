@@ -58,7 +58,7 @@ impl Array {
 impl Value {
     pub fn display(&self) -> String {
         match self {
-            Value::Num(n) => fmt_num(*n),
+            Value::Num(n) => fmt_num(*n, 10),
             Value::Str(s) => s.clone(),
             Value::Bool(b) => if *b { ".T." } else { ".F." }.into(),
             // shortcut: always MM/DD/YYYY, upgrade when SET DATE / SET CENTURY are implemented
@@ -82,11 +82,11 @@ impl Value {
     }
 }
 
-// shortcut: up to 10 decimals, no FoxPro column padding; upgrade when SET DECIMALS is implemented
-pub fn fmt_num(n: f64) -> String {
-    let s = format!("{:.10}", n);
-    let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s == "-0" { "0".into() } else { s.into() }
+// shortcut: at most `decimals` decimals with trailing zeros dropped, and no column padding.
+// FoxPro tracks a decimal count per value; upgrade if programs depend on the exact layout.
+pub fn fmt_num(n: f64, decimals: usize) -> String {
+    let s = format!("{:.*}", decimals, round(n, decimals as i32));
+    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').into() } else { s }
 }
 
 /// Rounds half away from zero, as FoxPro does.
@@ -137,7 +137,8 @@ pub fn unary(op: &str, v: Value) -> Result<Value, String> {
     })
 }
 
-pub fn binary(op: &str, a: Value, b: Value) -> Result<Value, String> {
+/// `exact` is SET EXACT: whether `=` on strings compares the whole string.
+pub fn binary(op: &str, a: Value, b: Value, exact: bool) -> Result<Value, String> {
     use Value::*;
     if a == Null || b == Null {
         return Ok(Null);
@@ -160,9 +161,12 @@ pub fn binary(op: &str, a: Value, b: Value) -> Result<Value, String> {
         ("%", Num(x), Num(y)) => Num(modulo(x, y)?),
         ("^" | "**", Num(x), Num(y)) => Num(x.powf(y)),
         ("$", Str(x), Str(y)) => Bool(y.contains(&x)),
-        // SET EXACT OFF semantics: `=` compares only up to the length of the right side
-        ("=", Str(x), Str(y)) => Bool(x.starts_with(&y)),
-        ("<>" | "!=" | "#", Str(x), Str(y)) => Bool(!x.starts_with(&y)),
+        // SET EXACT OFF: `=` compares only up to the length of the right side.
+        // SET EXACT ON: whole strings, ignoring trailing spaces.
+        ("=", Str(x), Str(y)) if !exact => Bool(x.starts_with(&y)),
+        ("<>" | "!=" | "#", Str(x), Str(y)) if !exact => Bool(!x.starts_with(&y)),
+        ("=", Str(x), Str(y)) => Bool(x.trim_end_matches(' ') == y.trim_end_matches(' ')),
+        ("<>" | "!=" | "#", Str(x), Str(y)) => Bool(x.trim_end_matches(' ') != y.trim_end_matches(' ')),
         (op, a, b) => {
             let ord = compare(&a, &b).ok_or(MISMATCH)?;
             Bool(match op {
