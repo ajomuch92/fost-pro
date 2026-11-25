@@ -43,8 +43,8 @@ impl Interp {
         let o = obj.0.borrow();
         Ok(match name {
             "PARENT" => Value::Object(o.parent().ok_or_else(|| err("Este objeto no tiene Parent"))?),
-            "CONTROLCOUNT" => Value::Num(o.children.len() as f64),
-            "CONTROLS" | "OBJECTS" => {
+            "CONTROLCOUNT" | "PAGECOUNT" | "BUTTONCOUNT" => Value::Num(o.children.len() as f64),
+            "CONTROLS" | "OBJECTS" | "PAGES" | "BUTTONS" => {
                 Value::Array(Array { cols: 0, data: o.kids().into_iter().map(Value::Object).collect() })
             }
             "LISTCOUNT" => Value::Num(o.list().len() as f64),
@@ -99,6 +99,13 @@ impl Interp {
             "RELEASE" => self.release(obj)?,
             "REFRESH" => {}
             "SETFOCUS" => self.focus = Some(obj.0.borrow().id),
+            "NAVIGATETO" => {
+                let url = text(0)?;
+                // no UI: say where it would have gone
+                if !self.host.open_url(&url) {
+                    self.print(&url);
+                }
+            }
             "ADDPROPERTY" => {
                 let value = a.get(1).cloned().unwrap_or(Value::Bool(false));
                 obj.0.borrow_mut().props.insert(text(0)?.to_uppercase(), value);
@@ -140,6 +147,33 @@ impl Interp {
             }
         }
         Ok(Value::Bool(true))
+    }
+
+    /// Assigning PageCount or ButtonCount adds or removes pages or buttons, as in FoxPro.
+    pub(crate) fn set_count(&mut self, obj: &ObjRef, v: Value) -> R<()> {
+        let base = obj.0.borrow().base;
+        let (Some((class, prefix)), Value::Num(count)) = (object::member_of(base), v) else {
+            return Err(err("PageCount y ButtonCount necesitan un número, en un PageFrame o un grupo"));
+        };
+        let count = count.clamp(0.0, 100.0) as usize;
+        loop {
+            let kids = obj.0.borrow().kids();
+            if kids.len() > count {
+                self.release(&kids[kids.len() - 1])?;
+            } else if kids.len() < count {
+                let name = format!("{prefix}{}", kids.len() + 1);
+                let child = self.create(class, Some(obj), &name)?;
+                self.set_prop(&child, "CAPTION", Value::Str(name))?;
+                // buttons stack downwards, each under the one before
+                if let Some(last) = kids.last().filter(|_| class != "PAGE") {
+                    let below = |prop| if let Ok(Value::Num(n)) = self.get_prop(last, prop) { n } else { 0.0 };
+                    self.set_prop(&child, "TOP", Value::Num(below("TOP") + below("HEIGHT") + 2.0))?;
+                }
+                self.init_tree(&child, Vec::new())?;
+            } else {
+                return Ok(());
+            }
+        }
     }
 
     /// Runs Destroy and detaches the object from its parent, or from the open forms.
@@ -233,7 +267,7 @@ impl Interp {
                 let v = self.eval(e)?;
                 let (target, prop) = self.resolve(obj, path)?;
                 // a plain `name = value` in a class declares the property
-                if !path.contains('.') {
+                if !path.contains('.') && !matches!(prop.as_str(), "PAGECOUNT" | "BUTTONCOUNT") {
                     target.0.borrow_mut().props.entry(prop.clone()).or_insert(Value::Bool(false));
                 }
                 self.set_prop(&target, &prop, v)?;

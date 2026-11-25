@@ -28,6 +28,11 @@ pub trait Host {
     fn input_box(&mut self, _prompt: &str, _title: &str, _default: &str) -> Option<String> {
         None
     }
+
+    /// Opens a web address in the user's browser. False means there is no UI to do it.
+    fn open_url(&mut self, _url: &str) -> bool {
+        false
+    }
 }
 
 impl Host for () {}
@@ -483,7 +488,16 @@ impl Interp {
         }
     }
 
+    /// Adds a line to the output, as `?` does.
+    pub(crate) fn print(&mut self, text: &str) {
+        self.out.push('\n');
+        self.out.push_str(text);
+    }
+
     pub(crate) fn set_prop(&mut self, obj: &ObjRef, name: &str, v: Value) -> R<()> {
+        if matches!(name, "PAGECOUNT" | "BUTTONCOUNT") {
+            return self.set_count(obj, v);
+        }
         match obj.0.borrow_mut().props.get_mut(name) {
             Some(slot) => Self::store(slot, v),
             None => return Err(err(format!("Propiedad no encontrada: {name}"))),
@@ -653,8 +667,7 @@ impl Interp {
                 }
                 let answer = self.host.message_box(&message, buttons, &title).unwrap_or_else(|| {
                     // no UI: print it and answer OK
-                    self.out.push('\n');
-                    self.out.push_str(&message);
+                    self.print(&message);
                     1
                 });
                 Value::Num(answer as f64)

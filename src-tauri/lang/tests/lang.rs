@@ -390,4 +390,83 @@ fn help_and_inputbox() {
     assert_eq!(reference["functions"][0]["syntax"], "LEN(texto)");
     it.run("f = CREATEOBJECT('Form')\n? f.MinButton, f.MaxButton, f.WindowState").unwrap();
     assert_eq!(it.take_output(), "\n.T. .T. 0");
+    it.run("f.BorderRadius = 12\nf.AddObject('pgf', 'PageFrame')\nf.pgf.Caption = 'Datos'\n? f.BorderRadius, f.pgf.Caption").unwrap();
+    assert_eq!(it.take_output(), "\n12 Datos");
+}
+
+#[test]
+fn containers_and_the_other_controls() {
+    let src = "
+f = CREATEOBJECT('Panel')
+? f.pgf.PageCount, f.pgf.Page2.Caption, f.pgf.Pages(1).Name, f.pgf.Page1.txt.Value, f.pgf.ActivePage
+? f.opt.ButtonCount, f.opt.Option3.Top > f.opt.Option2.Top, f.opt.Buttons(2).Caption, f.opt.Value
+f.pgf.PageCount = 1
+f.opt.ButtonCount = 4
+? f.pgf.PageCount, f.opt.ButtonCount, VARTYPE(f.opt.Option4)
+f.pgf.Page1.txt.Check()
+? f.box.spn.Value + f.box.spn.Increment, f.tmr.Interval, f.lnk.Url
+f.lnk.NavigateTo('https://example.com')
+
+DEFINE CLASS Panel AS Form
+    ADD OBJECT pgf AS PageFrame WITH PageCount = 2
+    ADD OBJECT opt AS OptionGroup WITH ButtonCount = 3, Value = 2
+    ADD OBJECT box AS Container
+    ADD OBJECT tmr AS Timer WITH Interval = 500
+    ADD OBJECT lnk AS HyperLink WITH Url = 'https://fost.example'
+    PROCEDURE Init
+        THIS.pgf.Page1.AddObject('txt', 'Field')
+        THIS.box.AddObject('spn', 'Spinner')
+        THIS.box.AddObject('img', 'Image')
+        THIS.box.AddObject('shp', 'Shape')
+        THIS.box.AddObject('lin', 'Line')
+        THIS.box.AddObject('cmg', 'CommandGroup')
+ENDDEFINE
+
+DEFINE CLASS Field AS TextBox
+    Value = 'dentro'
+    PROCEDURE Check
+        * THISFORM is found from any depth
+        ? THISFORM.Class, THIS.Parent.Name, THIS.Parent.Parent.Name
+ENDDEFINE
+";
+    assert_eq!(
+        run(src),
+        "2 Page2 Page1 dentro 1\n3 .T. Option2 2\n1 4 O\nPANEL Page1 PGF\n1 500 https://fost.example\nhttps://example.com"
+    );
+    assert_eq!(run("f = CREATEOBJECT('Form')\nf.PageCount = 2").split('!').nth(1), Some("Línea 2: PageCount y ButtonCount necesitan un número, en un PageFrame o un grupo"));
+    // every built-in class can be created, and the designer is told about all of them
+    let classes = fost_lang::class_info();
+    assert_eq!(classes.as_array().unwrap().len(), 21);
+    for class in classes.as_array().unwrap() {
+        assert_eq!(run(&format!("o = CREATEOBJECT('{}')\n? o.BaseClass", class["name"].as_str().unwrap())), class["name"].as_str().unwrap());
+    }
+}
+
+#[test]
+fn nested_controls_in_a_form_file() {
+    let form = r#"{ "controls": [
+      { "class": "PageFrame", "props": { "Name": "pgf" }, "controls": [
+        { "class": "Page", "props": { "Name": "Page1", "Caption": "Datos" }, "controls": [
+          { "class": "Container", "props": { "Name": "box" }, "controls": [
+            { "class": "CommandButton", "props": { "Name": "cmd" }, "methods": { "Click": "THISFORM.Caption = THIS.Parent.Parent.Caption" } } ] } ] },
+        { "class": "Page", "props": { "Name": "Page2" }, "methods": { "Activate": "? 'page 2'" } } ] },
+      { "class": "OptionGroup", "props": { "Name": "opt" }, "controls": [
+        { "class": "OptionButton", "props": { "Name": "Option1" } }, { "class": "OptionButton", "props": { "Name": "Option2" } } ],
+        "methods": { "InteractiveChange": "? 'elegida', THIS.Value" } } ] }"#;
+    let mut it = Interp::default();
+    it.run_form(form, "anidado").unwrap();
+    let forms = it.forms_json();
+    let (frame, group) = (&forms[0]["children"][0], &forms[0]["children"][1]);
+    let button = &frame["children"][0]["children"][0]["children"][0];
+    assert_eq!(button["base"], "COMMANDBUTTON");
+
+    // a click three levels down still reaches its handler, and the handler reaches the form
+    it.ui_event(button["id"].as_u64().unwrap(), &serde_json::Value::Null, Some("Click")).unwrap();
+    assert_eq!(it.forms_json()[0]["props"]["CAPTION"], "Datos");
+    // what the UI sends when the user picks the second option, then the second tab
+    it.ui_event(group["id"].as_u64().unwrap(), &serde_json::json!({ "Value": 2 }), Some("InteractiveChange")).unwrap();
+    it.ui_event(frame["id"].as_u64().unwrap(), &serde_json::json!({ "ActivePage": 2 }), None).unwrap();
+    it.ui_event(frame["children"][1]["id"].as_u64().unwrap(), &serde_json::Value::Null, Some("Activate")).unwrap();
+    assert_eq!(it.take_output(), "\nelegida 2\npage 2");
+    assert_eq!(it.forms_json()[0]["children"][0]["props"]["ACTIVEPAGE"], 2.0);
 }
