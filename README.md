@@ -53,6 +53,8 @@ el SQL.
   - Dibujo: `Image`, `Line`, `Shape`.
   - Contenedores: `Container`, y `PageFrame` con sus `Page` (pestañas). Se pueden anidar.
   - Otros: `Timer`, y `HyperLink`, que se dibuja como un enlace y abre su `Url` en el navegador.
+  - Ventana propia: un formulario con `ShowWindow = 2` se abre en una ventana del sistema, fuera de la
+    del IDE.
   - Datos: `ControlSource` enlaza un `TextBox`, `EditBox`, `Spinner`, `CheckBox`, `ComboBox`, `ListBox` u
     `OptionGroup` a un campo (`cliente.nombre`) o a una variable pública: muestra el registro actual y
     guarda lo que el usuario escribe. `Grid` muestra la tabla de su `RecordSource`, y un clic en una fila
@@ -93,6 +95,8 @@ La lista completa de comandos, funciones, clases y propiedades está en la ayuda
 - El `Grid` es de solo lectura, muestra todos los campos (no hay `Column` ni `ColumnCount`) y como máximo
   1000 registros. No hay entorno de datos: las tablas se abren con `USE` en el evento `Load`. `RowSource`
   de un `ComboBox` aún no acepta tablas, y no hay `TABLEUPDATE()` ni buffering.
+- La ventana de un formulario con `ShowWindow = 2` la coloca el sistema (`Left` y `Top` no se usan), y
+  cambiarle el tamaño no cambia `Width` ni `Height`. `INPUTBOX()` se pregunta en la ventana del IDE.
 - `HyperLink` es un control visible, no el objeto invisible de FoxPro; `NavigateTo()` sí funciona igual.
 - `ACTIVATE MENU` no detiene el programa a esperar una elección: el menú queda en pantalla y el programa
   sigue. Un bucle que lo active una y otra vez no termina.

@@ -1,11 +1,18 @@
 <script setup lang="ts">
-// The forms a program has shown, floating over the IDE.
-import { nextTick, ref, watch } from "vue";
+// The forms a program has shown, floating over the IDE. With `only`, just that form, filling a window of its own.
+import { computed, nextTick, ref, watch } from "vue";
 import { Copy, Minus, Square, X } from "@lucide/vue";
-import { type DrawNode, focus, forms, uiEvent, type FormNode } from "../engine";
+import { type DrawNode, focus, forms, TOP_LEVEL, uiEvent, type FormNode } from "../engine";
 import FormControl, { colorCss } from "./FormControl.vue";
 
+const props = defineProps<{ only?: number }>();
 const layer = ref<HTMLElement>();
+/** A top-level form is drawn by its own window, not over the IDE. */
+const shown = computed(() =>
+  forms.value.filter((f) => (props.only ? f.id === props.only : f.props.SHOWWINDOW !== TOP_LEVEL)),
+);
+/** Whether the form takes all the room there is. */
+const full = (form: FormNode) => !!props.only || form.props.WINDOWSTATE === MAXIMIZED;
 
 /** A control, at any depth, reports what the user did to it. */
 function act(node: DrawNode, props: Record<string, unknown> | null, events: string[]) {
@@ -64,12 +71,12 @@ watch(focus, async (id) => {
 <template>
   <div ref="layer" class="pointer-events-none absolute inset-0 overflow-hidden">
     <section
-      v-for="form in forms"
+      v-for="form in shown"
       :key="form.id"
-      class="pointer-events-auto absolute overflow-hidden border border-neutral-600 shadow-xl"
-      :class="{ 'inset-0 flex flex-col': form.props.WINDOWSTATE === MAXIMIZED }"
+      class="pointer-events-auto absolute overflow-hidden"
+      :class="[full(form) ? 'inset-0 flex flex-col' : '', only ? '' : 'border border-neutral-600 shadow-xl']"
       :style="
-        form.props.WINDOWSTATE === MAXIMIZED
+        full(form)
           ? {}
           : { left: `${place(form).left}px`, top: `${place(form).top}px`, borderRadius: `${form.props.BORDERRADIUS}px` }
       "
@@ -77,6 +84,7 @@ watch(focus, async (id) => {
       :aria-label="form.props.CAPTION"
     >
       <header
+        v-if="!only"
         class="flex cursor-move items-center bg-blue-700 px-2 py-1 text-sm text-white select-none"
         @pointerdown="drag(form, $event)"
       >
@@ -112,12 +120,12 @@ watch(focus, async (id) => {
         </button>
       </header>
       <div
-        v-show="form.props.WINDOWSTATE !== MINIMIZED"
+        v-show="only || form.props.WINDOWSTATE !== MINIMIZED"
         class="relative overflow-hidden text-black"
-        :class="{ 'flex-1': form.props.WINDOWSTATE === MAXIMIZED }"
+        :class="{ 'flex-1': full(form) }"
         :style="{
-          width: form.props.WINDOWSTATE === MAXIMIZED ? undefined : `${form.props.WIDTH}px`,
-          height: form.props.WINDOWSTATE === MAXIMIZED ? undefined : `${form.props.HEIGHT}px`,
+          width: full(form) ? undefined : `${form.props.WIDTH}px`,
+          height: full(form) ? undefined : `${form.props.HEIGHT}px`,
           backgroundColor: colorCss(form.props.BACKCOLOR),
         }"
         @click.self="act(form, null, ['Click'])"

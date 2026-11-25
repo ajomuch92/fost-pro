@@ -165,6 +165,8 @@ pub fn base(key: &str) -> Option<Base> {
                     ("MaxButton", Bool(true)),
                     // 0 normal, 1 minimized, 2 maximized
                     ("WindowState", Num(0.0)),
+                    // as in FoxPro, 2 makes it a top-level form: a window of its own, outside the IDE's
+                    ("ShowWindow", Num(0.0)),
                     // not a FoxPro property: how round the window's corners are, in pixels
                     ("BorderRadius", Num(0.0)),
                 ],

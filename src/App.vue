@@ -10,6 +10,7 @@ import FormDesigner from "./components/FormDesigner.vue";
 import FormLayer from "./components/FormLayer.vue";
 import MenuBar from "./components/MenuBar.vue";
 import HelpScreen from "./components/HelpScreen.vue";
+import { closeFormWindows } from "./formWindows";
 import ProjectPanel from "./components/ProjectPanel.vue";
 import PromptDialog from "./components/PromptDialog.vue";
 import ProgramEditor from "./components/ProgramEditor.vue";
@@ -157,7 +158,9 @@ onMounted(async () => {
   window.addEventListener("keydown", shortcut);
   // closing the window must not silently drop unsaved work
   stopCloseGuard = await getCurrentWindow().onCloseRequested(async (event) => {
-    if (!(await canDiscard())) event.preventDefault();
+    if (!(await canDiscard())) return event.preventDefault();
+    // the forms shown in windows of their own cannot outlive the program that runs them
+    closeFormWindows();
   });
 });
 onBeforeUnmount(() => {

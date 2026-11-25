@@ -1,7 +1,7 @@
 // The one place that talks to the interpreter, and the state every panel shows from it.
 import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 
 /** An object of a running form. Property names are upper-cased, as the interpreter keeps them. */
 export type FormNode = {
@@ -41,6 +41,11 @@ type RunResult = {
   open: OpenRequest | null;
   help: boolean;
 };
+
+/** Id of the form this window shows, when it is the window of a top-level form and not the IDE. */
+export const ownForm = Number(new URLSearchParams(location.search).get("form")) || null;
+/** The ShowWindow of a form that gets a window of its own. */
+export const TOP_LEVEL = 2;
 
 /** What the command window shows. */
 export const entries = ref<Entry[]>([]);
@@ -103,20 +108,45 @@ export function answerPrompt(value: string | null) {
   invoke("answer_prompt", { value });
 }
 
+/** Shows what a request to the interpreter brought back. */
+function apply(r: RunResult) {
+  if (r.clear) entries.value = [];
+  // `?` prints its newline first, so the output starts with one
+  if (r.output) entries.value.push({ kind: "out", text: r.output.replace(/^\n/, "") });
+  if (r.error) report(r.error);
+  forms.value = r.forms;
+  menus.value = r.menus;
+  if (r.focus != null) focus.value = r.focus;
+  if (r.open) openRequest.value = r.open;
+  if (r.help) helpOpen.value = true;
+}
+
+// The IDE's window shows everything. The window of a top-level form draws its form and hands the
+// rest (output, errors, menus) to the IDE, which in turn tells the form windows what changed.
+type Drawn = Pick<RunResult, "forms" | "focus">;
+const draw = (r: Drawn) => {
+  forms.value = r.forms;
+  if (r.focus != null) focus.value = r.focus;
+};
+if (ownForm) listen<Drawn>("fost-forms", (e) => draw(e.payload)).catch((e) => report(String(e)));
+else listen<RunResult>("fost-result", (e) => share(e.payload)).catch((e) => report(String(e)));
+
+function share(r: RunResult) {
+  if (ownForm) {
+    draw(r);
+    return emit("fost-result", r);
+  }
+  apply(r);
+  // nobody listens unless a form has its own window
+  return forms.value.some((f) => f.props.SHOWWINDOW === TOP_LEVEL) && emit("fost-forms", { forms: r.forms, focus: r.focus });
+}
+
 async function request(command: string, args: Record<string, unknown>) {
   pending.value++;
   let r: RunResult | undefined;
   try {
     r = await invoke<RunResult>(command, args);
-    if (r.clear) entries.value = [];
-    // `?` prints its newline first, so the output starts with one
-    if (r.output) entries.value.push({ kind: "out", text: r.output.replace(/^\n/, "") });
-    if (r.error) report(r.error);
-    forms.value = r.forms;
-    menus.value = r.menus;
-    if (r.focus != null) focus.value = r.focus;
-    if (r.open) openRequest.value = r.open;
-    if (r.help) helpOpen.value = true;
+    await share(r);
   } catch (e) {
     report(String(e));
   }
