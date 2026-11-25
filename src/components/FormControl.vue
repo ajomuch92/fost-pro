@@ -19,7 +19,7 @@ import { dir, type DrawNode, pending, report } from "../engine";
 
 const props = defineProps<{
   node: DrawNode;
-  /** Being laid out, not used: nothing reacts, and what is invisible at run time gets a stand-in. */
+  /** Being laid out, not used: only the tabs react, and what is invisible at run time gets a stand-in. */
   design?: boolean;
   /** The control that contains this one, and this one's place in it, counting from 0. */
   owner?: DrawNode;
@@ -305,7 +305,7 @@ const base = computed(() => props.node.base);
         type="button"
         role="tab"
         class="overflow-hidden border border-b-0 border-neutral-500 px-2 text-xs whitespace-nowrap disabled:opacity-60"
-        :class="tab === page ? 'bg-white font-semibold' : 'bg-neutral-300'"
+        :class="[tab === page ? 'bg-white font-semibold' : 'bg-neutral-300', { 'pointer-events-auto': design }]"
         :aria-selected="tab === page"
         :disabled="!tab.props.ENABLED"
         @click="(act({ ActivePage: i + 1 }, []), emit('act', tab, null, ['Activate']))"

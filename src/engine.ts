@@ -15,7 +15,12 @@ export type FormNode = {
   children: FormNode[];
 };
 /** What it takes to draw a control: a node of a running form, or one the designer is laying out. */
-export type DrawNode = Pick<FormNode, "base" | "props"> & Partial<Omit<FormNode, "children">> & { children?: DrawNode[] };
+export type DrawNode = Pick<FormNode, "base" | "props"> &
+  Partial<Omit<FormNode, "children">> & {
+    children?: DrawNode[];
+    /** For the designer: the node of the form file this was drawn from. */
+    source?: object;
+  };
 /** A built-in class: its properties with their defaults, and the events it can raise. */
 export type ClassInfo = { name: string; props: [string, unknown][]; events: string[] };
 export type OpenRequest = { form: boolean; path: string | null };

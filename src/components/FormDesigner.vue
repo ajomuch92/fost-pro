@@ -68,9 +68,10 @@ function accepts(parent: DesignNode, cls: string) {
   return ["Form", "Container", "Page"].includes(parent.class) && cls !== "OptionButton" && cls !== "Page";
 }
 
+type Placed = { node: DesignNode; parent: DesignNode | null; depth: number; x: number; y: number; shown: boolean };
+
 /** Every node of the form, with its parent, its depth, and where its corner is on the form's surface. */
 const tree = computed(() => {
-  type Placed = { node: DesignNode; parent: DesignNode | null; depth: number; x: number; y: number; shown: boolean };
   const out: Placed[] = [];
   // (ox, oy) is where the parent's contents start; `shown` is false inside a page that is not the active one
   const walk = (node: DesignNode, parent: DesignNode | null, depth: number, ox: number, oy: number, shown: boolean) => {
@@ -87,6 +88,43 @@ const tree = computed(() => {
   return out;
 });
 const parentOf = (node: DesignNode) => tree.value.find((p) => p.node === node)?.parent ?? null;
+
+/** The part of the surface where a container's controls go. */
+function area(p: Placed) {
+  // a page is as big as its frame, minus the tabs and title above it
+  const frame = p.node.class === "Page" ? p.parent! : p.node;
+  const above = p.node.class === "Page" ? pageTop(value(frame, "Caption")) : 0;
+  return { x: p.x, y: p.y, w: num(frame, "Width"), h: num(frame, "Height") - above };
+}
+
+/** The container under the middle of `node` that could take it: the innermost one, and never one inside `node`. */
+function containerUnder(node: DesignNode) {
+  const me = tree.value.find((p) => p.node === node)!;
+  const [cx, cy] = [me.x + num(node, "Width") / 2, me.y + num(node, "Height") / 2];
+  const within = (p: Placed) => {
+    for (let n: DesignNode | null = p.node; n; n = parentOf(n)) if (n === node) return false;
+    const a = area(p);
+    return cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h;
+  };
+  // later in the tree means deeper, or drawn on top
+  return tree.value.filter((p) => p.shown && accepts(p.node, node.class) && within(p)).pop();
+}
+
+/** Moves a control into another container, keeping it where it is on screen. */
+function moveInto(node: DesignNode, target: Placed) {
+  const me = tree.value.find((p) => p.node === node)!;
+  const [left, top] = [me.x - target.x, me.y - target.y];
+  const parent = me.parent!;
+  parent.controls = parent.controls.filter((c) => c !== node);
+  // names must be unique among the controls of one container
+  const taken = target.node.controls.map((c) => String(c.props.Name).toUpperCase());
+  let name = String(node.props.Name);
+  for (let n = 2; taken.includes(name.toUpperCase()); n++) name = `${node.props.Name}_${n}`;
+  node.props.Name = name;
+  target.node.controls.push(node);
+  put(node, "Left", left);
+  put(node, "Top", top);
+}
 
 /** Where a new control of class `cls` goes: the selected object if it can hold it, else the nearest one around it that can. */
 function hostFor(cls: string) {
@@ -105,6 +143,7 @@ function view(node: DesignNode): DrawNode {
     props,
     items: list.map((s) => s.trim()).filter(Boolean),
     children: node.controls.map(view),
+    source: node,
   };
 }
 
@@ -199,19 +238,43 @@ function remove() {
   emit("change");
 }
 
+/** While a control is dragged over a container other than its own: where it would land. */
+const drop = ref<ReturnType<typeof area> | null>(null);
+
 function startDrag(node: DesignNode, down: PointerEvent, mode: "move" | "size") {
   selected.value = node;
+  const moving = mode === "move" && node !== form.value;
   const [a, b] = mode === "move" ? ["Left", "Top"] : ["Width", "Height"];
-  // a Line may be flat; anything else stays big enough to grab
-  const min = mode === "move" || node.class === "Line" ? 0 : 8;
+  // a control being moved may leave its container by any side; a size stays big enough to grab, except a Line's
+  const min = moving ? -Infinity : node.class === "Line" ? 0 : 8;
   const from = { x: down.clientX, y: down.clientY, a: num(node, a), b: num(node, b) };
+  /** The container the control is over, when it is not the one it is already in. */
+  const destination = () => {
+    const target = moving ? containerUnder(node) : undefined;
+    return target && target.node !== parentOf(node) ? target : undefined;
+  };
   const move = (e: PointerEvent) => {
     set(node, a, Math.max(min, Math.round(from.a + e.clientX - from.x)));
     set(node, b, Math.max(min, Math.round(from.b + e.clientY - from.y)));
+    const target = destination();
+    drop.value = target ? area(target) : null;
+  };
+  const up = () => {
+    removeEventListener("pointermove", move);
+    drop.value = null;
+    if (!moving) return;
+    const target = destination();
+    if (target) moveInto(node, target);
+    // wherever it ended up, it must not be left out of reach above or left of its container
+    set(node, "Left", Math.max(0, num(node, "Left")));
+    set(node, "Top", Math.max(0, num(node, "Top")));
   };
   addEventListener("pointermove", move);
-  addEventListener("pointerup", () => removeEventListener("pointermove", move), { once: true });
+  addEventListener("pointerup", up, { once: true });
 }
+
+/** The title and tabs of a page frame are left uncovered, so its tabs can be clicked. */
+const gripTop = (node: DesignNode) => (node.class === "PageFrame" ? pageTop(value(node, "Caption")) : 0);
 
 /** Arrows move the control, with Shift they resize it; Delete removes it. */
 function keyed(node: DesignNode, e: KeyboardEvent) {
@@ -346,14 +409,27 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
             }"
             @pointerdown.self="selected = form"
           >
-            <FormControl v-for="(c, i) in form.controls" :key="`view${i}`" :node="view(c)" design class="pointer-events-none" />
+            <!-- the only thing a drawn control reports while designing is a click on a tab: select that page -->
+            <FormControl
+              v-for="(c, i) in form.controls"
+              :key="`view${i}`"
+              :node="view(c)"
+              design
+              class="pointer-events-none"
+              @act="(n) => n.base === 'PAGE' && (selected = n.source as DesignNode)"
+            />
             <!-- a transparent grip over each control takes the pointer and the keyboard; inner controls come later, so on top -->
             <div
               v-for="(p, i) in tree.filter((p) => p.shown && p.parent && p.node.class !== 'Page')"
               :key="`grip${i}`"
               class="absolute min-h-1.5 min-w-1.5 cursor-move"
               :class="{ 'outline-2 outline-blue-500': selected === p.node }"
-              :style="{ left: `${p.x}px`, top: `${p.y}px`, width: px(p.node, 'Width'), height: px(p.node, 'Height') }"
+              :style="{
+                left: `${p.x}px`,
+                top: `${p.y + gripTop(p.node)}px`,
+                width: px(p.node, 'Width'),
+                height: `${num(p.node, 'Height') - gripTop(p.node)}px`,
+              }"
               tabindex="0"
               role="button"
               :aria-label="`${p.node.props.Name}: flechas para mover, Mayús+flechas para cambiar el tamaño, Supr para eliminar`"
@@ -363,6 +439,11 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
             >
               <span v-if="selected === p.node" :class="handle" @pointerdown.stop="startDrag(p.node, $event, 'size')" />
             </div>
+            <div
+              v-if="drop"
+              class="pointer-events-none absolute outline-2 outline-green-600 outline-dashed"
+              :style="{ left: `${drop.x}px`, top: `${drop.y}px`, width: `${drop.w}px`, height: `${drop.h}px` }"
+            />
             <span :class="handle" title="Cambiar el tamaño del formulario" @pointerdown.stop="startDrag(form, $event, 'size')" />
           </div>
         </div>
