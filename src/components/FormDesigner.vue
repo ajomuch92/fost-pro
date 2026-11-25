@@ -97,12 +97,18 @@ function area(p: Placed) {
   return { x: p.x, y: p.y, w: num(frame, "Width"), h: num(frame, "Height") - above };
 }
 
+/** Whether `node` is `ancestor` or somewhere inside it. */
+function isInside(node: DesignNode, ancestor: DesignNode) {
+  for (let n: DesignNode | null = node; n; n = parentOf(n)) if (n === ancestor) return true;
+  return false;
+}
+
 /** The container under the middle of `node` that could take it: the innermost one, and never one inside `node`. */
 function containerUnder(node: DesignNode) {
   const me = tree.value.find((p) => p.node === node)!;
   const [cx, cy] = [me.x + num(node, "Width") / 2, me.y + num(node, "Height") / 2];
   const within = (p: Placed) => {
-    for (let n: DesignNode | null = p.node; n; n = parentOf(n)) if (n === node) return false;
+    if (isInside(p.node, node)) return false;
     const a = area(p);
     return cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h;
   };
@@ -124,6 +130,30 @@ function moveInto(node: DesignNode, target: Placed) {
   target.node.controls.push(node);
   put(node, "Left", left);
   put(node, "Top", top);
+}
+
+/** Every container the selected control could live in, its present one included. */
+const homes = computed(() => tree.value.filter((p) => accepts(p.node, selected.value.class) && !isInside(p.node, selected.value)));
+const homeName = (p: Placed) => (p.node.class === "Page" ? `${p.parent!.props.Name}.${p.node.props.Name}` : String(p.node.props.Name));
+
+/** Moves the selected control to another container, chosen from the list rather than by dragging. */
+function rehome(target: Placed) {
+  const node = selected.value;
+  if (target.node === parentOf(node)) return;
+  moveInto(node, target);
+  // it keeps its place on screen when that is inside the new container; otherwise it goes to its corner
+  const room = area(target);
+  if (num(node, "Left") < 0 || num(node, "Left") >= room.w) put(node, "Left", 10);
+  if (num(node, "Top") < 0 || num(node, "Top") >= room.h) put(node, "Top", 10);
+  reveal(node);
+  emit("change");
+}
+
+/** Brings to the front the page a node is on, and the pages that one is on, so it can be seen. */
+function reveal(node: DesignNode) {
+  for (let child = node, parent = parentOf(child); parent; child = parent, parent = parentOf(parent)) {
+    if (parent.class === "PageFrame") front.set(parent, parent.controls.indexOf(child) + 1);
+  }
 }
 
 /** Where a new control of class `cls` goes: the selected object if it can hold it, else the nearest one around it that can. */
@@ -307,11 +337,7 @@ watch([selected, event], async () => {
 });
 
 // Selecting something on a page brings that page to the front, so it can be seen and edited.
-watch(selected, (node) => {
-  for (let child = node, parent = parentOf(child); parent; child = parent, parent = parentOf(parent)) {
-    if (parent.class === "PageFrame") front.set(parent, parent.controls.indexOf(child) + 1);
-  }
-});
+watch(selected, reveal);
 
 function edited() {
   if (loading) return;
@@ -474,6 +500,17 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
           <input :class="field" :value="selected.props.Name" @change="rename(selected, typed($event))" />
         </label>
         <p v-if="nameError" class="text-red-600 dark:text-red-400" role="alert">{{ nameError }}</p>
+        <!-- the same as dragging the control onto another container, for when dragging is not an option -->
+        <label v-if="selected !== form && homes.length > 1" class="grid grid-cols-2 items-center gap-1 py-0.5">
+          Dentro de
+          <select
+            :class="field"
+            :value="homes.findIndex((p) => p.node === parentOf(selected))"
+            @change="rehome(homes[Number(typed($event))])"
+          >
+            <option v-for="(p, i) in homes" :key="i" :value="i">{{ homeName(p) }}</option>
+          </select>
+        </label>
         <label v-for="[key, initial] in info(selected)?.props" :key="key" class="grid grid-cols-2 items-center gap-1 py-0.5">
           {{ key }}
           <input

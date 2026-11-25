@@ -313,8 +313,10 @@ const base = computed(() => props.node.base);
         {{ tab.props.CAPTION }}
       </button>
     </div>
+    <!-- not clipped while designing: a control being dragged off the page must stay in sight -->
     <div
-      class="relative min-h-0 flex-1 overflow-hidden shadow-[inset_0_0_0_1px_#737373]"
+      class="relative min-h-0 flex-1 shadow-[inset_0_0_0_1px_#737373]"
+      :class="{ 'overflow-hidden': !design }"
       :style="{ backgroundColor: page ? colorCss(page.props.BACKCOLOR) : undefined }"
       role="tabpanel"
     >
