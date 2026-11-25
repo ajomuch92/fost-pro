@@ -1,19 +1,37 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { dir, openRequest, report, run, runForm } from "./engine";
 import CommandWindow from "./components/CommandWindow.vue";
+import FormDesigner from "./components/FormDesigner.vue";
+import FormLayer from "./components/FormLayer.vue";
 import ProgramEditor from "./components/ProgramEditor.vue";
 
+/** One document is open at a time: a program in the editor, or a form in the designer. */
+type Kind = "program" | "form";
+const kinds = {
+  program: { extension: "fost", label: "Programa Fost", untitled: "programa" },
+  form: { extension: "fostform", label: "Formulario Fost", untitled: "formulario" },
+};
+const kindOf = (file: string): Kind => (/\.fostform$/i.test(file) ? "form" : "program");
+
 const editor = ref<InstanceType<typeof ProgramEditor>>();
-const commands = ref<InstanceType<typeof CommandWindow>>();
+const designer = ref<InstanceType<typeof FormDesigner>>();
+const kind = ref<Kind>("program");
 const path = ref<string | null>(null);
 const dirty = ref(false);
-const filters = [{ name: "Programa Fost", extensions: ["fost"] }];
 
+const view = (k: Kind) => (k === "form" ? designer.value! : editor.value!);
 const name = computed(() => path.value?.replace(/^.*[\\/]/, "") ?? "sin título");
-const dir = computed(() => path.value?.replace(/[\\/][^\\/]*$/, "") ?? null);
+/** The file name without its extension: what DO and DO FORM call it. */
+const stem = (file: string) => file.replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "");
+
+// DO and DO FORM look for files next to the open document
+watch(path, (p) => {
+  if (p) dir.value = p.replace(/[\\/][^\\/]*$/, "");
+});
 
 const canDiscard = async () =>
   !dirty.value || (await confirm("Hay cambios sin guardar. ¿Descartarlos?", { kind: "warning" }));
@@ -23,46 +41,81 @@ async function attempt(action: () => Promise<unknown>) {
   try {
     await action();
   } catch (e) {
-    commands.value?.report(String(e));
+    report(String(e));
   }
 }
 
-const newFile = () =>
+/** Makes `text` the open document. A form that cannot be read leaves the current document alone. */
+function show(k: Kind, text: string, file: string | null) {
+  view(k).setText(text);
+  kind.value = k;
+  path.value = file;
+  dirty.value = false;
+}
+
+/** Opens a file. With `orNew`, a file that does not exist yet becomes an empty document with that name. */
+async function load(file: string, orNew = false) {
+  const k = kindOf(file);
+  let text = "";
+  try {
+    text = await invoke<string>("read_file", { path: file });
+  } catch (e) {
+    if (!orNew) throw e;
+    if (k === "form") text = JSON.stringify({ props: { Name: stem(file).replace(/\W/g, "_") } });
+  }
+  show(k, text, file);
+}
+
+const newDoc = (k: Kind) =>
   attempt(async () => {
-    if (!(await canDiscard())) return;
-    editor.value!.setText("");
-    path.value = null;
-    dirty.value = false;
+    if (await canDiscard()) show(k, "", null);
   });
 
 const openFile = () =>
   attempt(async () => {
     if (!(await canDiscard())) return;
-    const chosen = await open({ filters });
-    if (!chosen) return;
-    editor.value!.setText(await invoke<string>("read_file", { path: chosen }));
-    path.value = chosen;
-    dirty.value = false;
+    const chosen = await open({ filters: [{ name: "Programas y formularios Fost", extensions: ["fost", "fostform"] }] });
+    if (chosen) await load(chosen);
   });
 
 const saveFile = () =>
   attempt(async () => {
-    const target = path.value ?? (await saveDialog({ filters, defaultPath: "programa.fost" }));
+    const { extension, label, untitled } = kinds[kind.value];
+    const filters = [{ name: label, extensions: [extension] }];
+    let target = path.value ?? (await saveDialog({ filters, defaultPath: `${untitled}.${extension}` }));
     if (!target) return;
-    await invoke("write_file", { path: target, text: editor.value!.getText() });
+    // the extension decides how the file is opened and run, so it is not optional
+    if (kindOf(target) !== kind.value || !/\.fost(form)?$/i.test(target)) target += `.${extension}`;
+    await invoke("write_file", { path: target, text: view(kind.value).getText() });
     path.value = target;
     dirty.value = false;
   });
 
-async function runProgram() {
-  const result = await commands.value!.execute(editor.value!.getText(), `DO ${name.value}`);
+async function runDoc() {
+  const text = view(kind.value).getText();
+  if (kind.value === "form") {
+    await runForm(text, path.value ? stem(path.value) : kinds.form.untitled);
+    return;
+  }
+  const result = await run(text, `DO ${name.value}`);
   if (result?.line) editor.value!.gotoLine(result.line);
 }
+
+// MODIFY COMMAND, MODIFY FORM and CREATE FORM typed in the command window
+watch(openRequest, (request) => {
+  if (!request) return;
+  openRequest.value = null;
+  attempt(async () => {
+    if (!(await canDiscard())) return;
+    if (request.path) await load(request.path, true);
+    else show(request.form ? "form" : "program", "", null);
+  });
+});
 
 function shortcut(e: KeyboardEvent) {
   const action =
     e.key === "F5"
-      ? runProgram
+      ? runDoc
       : (e.ctrlKey || e.metaKey) && e.key === "s"
         ? saveFile
         : (e.ctrlKey || e.metaKey) && e.key === "o"
@@ -92,13 +145,18 @@ const button = "rounded px-2 py-1 hover:bg-neutral-200 dark:hover:bg-neutral-700
 <template>
   <main class="flex h-screen flex-col bg-white text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
     <header class="flex items-center gap-1 border-b border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700">
-      <button type="button" :class="button" @click="newFile">Nuevo</button>
+      <button type="button" :class="button" @click="newDoc('program')">Nuevo programa</button>
+      <button type="button" :class="button" @click="newDoc('form')">Nuevo formulario</button>
       <button type="button" :class="button" title="Ctrl+O" @click="openFile">Abrir</button>
       <button type="button" :class="button" title="Ctrl+S" @click="saveFile">Guardar</button>
-      <button type="button" :class="button" title="F5" @click="runProgram">Ejecutar (F5)</button>
+      <button type="button" :class="button" title="F5" @click="runDoc">Ejecutar (F5)</button>
       <span class="ml-auto text-neutral-500">{{ name }}{{ dirty ? " (sin guardar)" : "" }}</span>
     </header>
-    <ProgramEditor ref="editor" class="min-h-0 flex-1" @change="dirty = true" />
-    <CommandWindow ref="commands" :dir="dir" class="h-2/5 border-t border-neutral-300 dark:border-neutral-700" />
+    <div class="relative flex min-h-0 flex-1 flex-col">
+      <ProgramEditor v-show="kind === 'program'" ref="editor" class="min-h-0 flex-1" @change="dirty = true" />
+      <FormDesigner v-show="kind === 'form'" ref="designer" class="min-h-0 flex-1" @change="dirty = true" />
+      <CommandWindow class="h-1/3 border-t border-neutral-300 dark:border-neutral-700" />
+      <FormLayer />
+    </div>
   </main>
 </template>

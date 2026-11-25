@@ -1,0 +1,86 @@
+// The one place that talks to the interpreter, and the state every panel shows from it.
+import { ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+
+/** An object of a running form. Property names are upper-cased, as the interpreter keeps them. */
+export type FormNode = {
+  id: number;
+  base: string;
+  props: Record<string, any>;
+  /** Choices of a ComboBox or ListBox. */
+  items: string[];
+  /** Upper-cased names of the events somebody handles: only those need reporting. */
+  events: string[];
+  children: FormNode[];
+};
+/** A built-in class: its properties with their defaults, and the events it can raise. */
+export type ClassInfo = { name: string; props: [string, unknown][]; events: string[] };
+export type OpenRequest = { form: boolean; path: string | null };
+type Entry = { kind: "cmd" | "out" | "err"; text: string };
+type RunResult = {
+  output: string;
+  error: string | null;
+  line: number | null;
+  clear: boolean;
+  forms: FormNode[];
+  focus: number | null;
+  open: OpenRequest | null;
+};
+
+/** What the command window shows. */
+export const entries = ref<Entry[]>([]);
+/** The forms on screen. */
+export const forms = ref<FormNode[]>([]);
+/** Id of a control a program asked to focus; whoever handles it sets it back to null. */
+export const focus = ref<number | null>(null);
+/** A file a program asked the IDE to open (MODIFY COMMAND and friends). */
+export const openRequest = ref<OpenRequest | null>(null);
+/** Requests sent to the interpreter and not answered yet. */
+export const pending = ref(0);
+/** Folder where DO and DO FORM look for files; null keeps the one used last. */
+export const dir = ref<string | null>(null);
+export const classes = ref<ClassInfo[]>([]);
+
+export const report = (text: string) => entries.value.push({ kind: "err", text });
+
+invoke<ClassInfo[]>("class_info").then(
+  (info) => (classes.value = info),
+  (e) => report(String(e)),
+);
+
+async function request(command: string, args: Record<string, unknown>) {
+  pending.value++;
+  let r: RunResult | undefined;
+  try {
+    r = await invoke<RunResult>(command, args);
+    if (r.clear) entries.value = [];
+    // `?` prints its newline first, so the output starts with one
+    if (r.output) entries.value.push({ kind: "out", text: r.output.replace(/^\n/, "") });
+    if (r.error) report(r.error);
+    forms.value = r.forms;
+    if (r.focus != null) focus.value = r.focus;
+    if (r.open) openRequest.value = r.open;
+  } catch (e) {
+    report(String(e));
+  }
+  pending.value--;
+  return r;
+}
+
+/** Runs `code`, showing `echo` as the command that was typed. */
+export function run(code: string, echo: string) {
+  entries.value.push({ kind: "cmd", text: echo });
+  return request("run_code", { code, dir: dir.value });
+}
+
+/** Opens a form from the JSON of a form file, saved or not. */
+export function runForm(json: string, name: string) {
+  entries.value.push({ kind: "cmd", text: `DO FORM ${name}` });
+  return request("run_form", { json, name, dir: dir.value });
+}
+
+/** Tells a form what the user did: the values that changed, and the event to run, if any. */
+export const uiEvent = (id: number, props: Record<string, unknown>, event: string | null) =>
+  request("ui_event", { id, props, event });
+
+export const stop = () => invoke("stop_code");

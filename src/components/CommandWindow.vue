@@ -1,56 +1,25 @@
 <script setup lang="ts">
-import { nextTick, ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { nextTick, ref, watch } from "vue";
+import { entries, pending, run as runCode, stop } from "../engine";
 
-type Entry = { kind: "cmd" | "out" | "err"; text: string };
-type RunResult = { output: string; error: string | null; line: number | null; clear: boolean };
-
-/** Folder where DO looks for programs; null keeps the one used last. */
-const props = defineProps<{ dir: string | null }>();
-
-const entries = ref<Entry[]>([]);
 const input = ref("");
-const running = ref(false);
 const log = ref<HTMLElement>();
 const history: string[] = [];
 let cursor = 0;
 
-function report(text: string) {
-  entries.value.push({ kind: "err", text });
-  nextTick(() => log.value?.scrollTo(0, log.value.scrollHeight));
-}
-
-/** Runs `code`, showing `echo` as the command. Resolves to nothing if a program was already running. */
-async function execute(code: string, echo: string) {
-  if (running.value) return;
-  entries.value.push({ kind: "cmd", text: echo });
-  running.value = true;
-  let r: RunResult | undefined;
-  try {
-    r = await invoke<RunResult>("run_code", { code, dir: props.dir });
-    if (r.clear) entries.value = [];
-    // `?` prints its newline first, so the output starts with one
-    if (r.output) entries.value.push({ kind: "out", text: r.output.replace(/^\n/, "") });
-    if (r.error) entries.value.push({ kind: "err", text: r.error });
-  } catch (e) {
-    entries.value.push({ kind: "err", text: String(e) });
-  }
-  running.value = false;
-  await nextTick();
-  log.value?.scrollTo(0, log.value.scrollHeight);
-  return r;
-}
+watch(
+  () => entries.value.length,
+  () => nextTick(() => log.value?.scrollTo(0, log.value.scrollHeight)),
+);
 
 function run() {
   const code = input.value;
-  if (!code.trim() || running.value) return;
+  if (!code.trim() || pending.value) return;
   history.push(code);
   cursor = history.length;
   input.value = "";
-  execute(code, code);
+  runCode(code, code);
 }
-
-defineExpose({ execute, report });
 
 function recall(step: number, event: KeyboardEvent) {
   // in a multi-line command the arrows move the caret instead
@@ -61,7 +30,7 @@ function recall(step: number, event: KeyboardEvent) {
 }
 
 function escape() {
-  if (running.value) invoke("stop_code");
+  if (pending.value) stop();
   else input.value = "";
 }
 </script>
@@ -100,10 +69,10 @@ function escape() {
         @keydown.esc="escape"
       />
       <button
-        v-if="running"
+        v-if="pending"
         type="button"
         class="rounded border border-neutral-400 px-2 hover:bg-neutral-200 dark:hover:bg-neutral-700"
-        @click="escape"
+        @click="stop"
       >
         Detener
       </button>
