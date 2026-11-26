@@ -27,9 +27,10 @@ import {
   Type,
   X,
 } from "@lucide/vue";
-import { assets, classes, type DrawNode, type EditAction } from "../engine";
+import { areaSize, assets, classes, type DrawNode, type EditAction } from "../engine";
 import FormControl, { colorCss, pageTop } from "./FormControl.vue";
 import ProgramEditor from "./ProgramEditor.vue";
+import ResizeHandle from "./ResizeHandle.vue";
 
 type DesignNode = {
   class: string;
@@ -402,6 +403,10 @@ function step(to: number) {
   emit("change");
 }
 
+const paletteWidth = areaSize("palette", 192);
+const propsWidth = areaSize("props", 272);
+const codeHeight = areaSize("code", 220);
+
 /** Whether the code editor, and not the drawing, was used last: Edit acts on that one. */
 const inCode = ref(false);
 /** The names to offer after a dot in the code: the form's objects, then every property and the usual methods. */
@@ -434,8 +439,13 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
 </script>
 
 <template>
-  <div class="grid h-full min-h-0 grid-cols-[12rem_1fr_17rem] text-sm">
-    <nav class="flex flex-col gap-1 overflow-y-auto border-r border-neutral-300 p-2 dark:border-neutral-700" aria-label="Agregar control">
+  <div class="flex h-full min-h-0 text-sm">
+    <nav
+      v-show="paletteWidth"
+      class="flex shrink-0 flex-col gap-1 overflow-y-auto p-2"
+      :style="{ width: `${paletteWidth}px` }"
+      aria-label="Agregar control"
+    >
       <button
         v-for="c in classes.filter((c) => !['Custom', 'Form', 'Column', 'Header'].includes(c.name))"
         :key="c.name"
@@ -449,8 +459,9 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
         {{ c.name }}
       </button>
     </nav>
+    <ResizeHandle v-model="paletteWidth" label="Controles" />
 
-    <div class="flex min-h-0 min-w-0 flex-col">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
       <div
         class="min-h-0 flex-1 overflow-auto bg-neutral-300 p-4 select-none dark:bg-neutral-800"
         @pointerdown.self="selected = form"
@@ -525,7 +536,8 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
         </div>
       </div>
 
-      <div class="flex h-2/5 min-h-0 flex-col border-t border-neutral-300 dark:border-neutral-700">
+      <ResizeHandle v-model="codeHeight" label="Código" vertical after />
+      <div v-show="codeHeight" class="flex min-h-0 shrink-0 flex-col" :style="{ height: `${codeHeight}px` }" data-area="code">
         <label class="flex items-center gap-2 px-2 py-1">
           Código de {{ selected.props.Name }}
           <select v-model="event" :class="field">
@@ -536,7 +548,8 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
       </div>
     </div>
 
-    <aside class="flex min-h-0 flex-col border-l border-neutral-300 dark:border-neutral-700" aria-label="Propiedades">
+    <ResizeHandle v-model="propsWidth" label="Propiedades" after />
+    <aside v-show="propsWidth" class="flex min-h-0 shrink-0 flex-col" :style="{ width: `${propsWidth}px` }" aria-label="Propiedades">
       <div class="flex items-center gap-1 border-b border-neutral-300 p-2 dark:border-neutral-700">
         <!-- every object of the form, indented by depth: the way to reach pages and what a container hides -->
         <select v-model="selected" class="flex-1" :class="field" aria-label="Objeto seleccionado">

@@ -80,6 +80,20 @@ function remembered(key: string) {
 }
 /** The pictures and other files of the open project's `assets` folder, as a form names them. */
 export const assets = ref<string[]>([]);
+/** The size in pixels of an area of the IDE, remembered between sessions. 0 is closed. */
+export function areaSize(key: string, initial: number) {
+  const stored = Number(remembered(`fost-size-${key}`) ?? NaN);
+  const size = ref(Number.isFinite(stored) ? stored : initial);
+  watch(size, (px) => {
+    try {
+      localStorage.setItem(`fost-size-${key}`, String(px));
+    } catch {
+      // not remembered, nothing else is lost
+    }
+  });
+  return size;
+}
+
 /** Folder of the open project: a project is a folder. Remembered between sessions. */
 export const project = ref<string | null>(remembered("fost-project"));
 watch(
