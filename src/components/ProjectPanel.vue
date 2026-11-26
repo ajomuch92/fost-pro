@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // The open project: the programs, forms, classes and tables of its folder.
-import { ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { Play, Plus, RefreshCw, Star, X } from "@lucide/vue";
@@ -22,7 +22,8 @@ type Info = {
 /** A file of the project to open, and the line to go to when it matters; or the main program to run. */
 const emit = defineEmits<{
   open: [file: string, line?: number];
-  run: [program: string];
+  /** Code to run in the project's folder, and how to show it in the command window. */
+  run: [code: string, echo?: string];
   /** A file of the project changed its name, or is gone (`to` null). */
   moved: [from: string, to: string | null];
 }>();
@@ -76,16 +77,50 @@ watch(pending, (waiting) => waiting || refresh());
 // saving a file may add it, or change its classes
 defineExpose({ refresh });
 
-// The context menu: where it is, and the file it was opened on, if any.
-const menu = ref<{ x: number; y: number; file: string | null } | null>(null);
-const menuItems = () => {
+// The context menu: where it is and what it was opened on. Nothing is the panel itself.
+type Target =
+  | { kind: "program" | "form" | "asset"; file: string }
+  | { kind: "class"; file: string; line: number }
+  | { kind: "table"; name: string }
+  | null;
+const menu = ref<{ x: number; y: number; target: Target } | null>(null);
+/** What can be done to the thing under the pointer. */
+function menuItems(): MenuItem[] {
   const item = (key: string, prompt: string): MenuItem => ({ key, prompt, disabled: false, popup: null, items: null });
-  const forFile = menu.value?.file ? [item("-", "\\-"), item("rename", "Renombrar..."), item("delete", "Eliminar")] : [];
-  return [item("program", "Nuevo programa..."), item("form", "Nuevo formulario..."), ...forFile];
-};
-function showMenu(e: MouseEvent, file: string | null = null) {
-  menu.value = { x: e.clientX, y: e.clientY, file };
+  const forFile = [item("-", "\\-"), item("rename", "Renombrar..."), item("delete", "Eliminar")];
+  const target = menu.value!.target;
+  switch (target?.kind) {
+    case "program": {
+      const main = info.value!.main === target.file ? "Quitar como programa principal" : "Marcar como programa principal";
+      return [item("open", "Abrir"), item("run", "Ejecutar"), item("main", main), ...forFile];
+    }
+    case "form":
+      return [item("open", "Abrir en el diseñador"), item("run", "Ejecutar"), ...forFile];
+    case "class":
+      return [item("open", "Ir a la definición")];
+    case "table":
+      return [item("browse", "Examinar los datos")];
+    case "asset":
+      return [item("copy", "Copiar la ruta"), ...forFile];
+    default:
+      return [
+        item("program", "Nuevo programa..."),
+        item("form", "Nuevo formulario..."),
+        item("assets", "Agregar recursos..."),
+        item("-", "\\-"),
+        item("refresh", "Actualizar"),
+      ];
+  }
 }
+// Escape closes the menu wherever the keyboard is: opening it does not move the focus into the panel
+const dismiss = (e: KeyboardEvent) => e.key === "Escape" && (menu.value = null);
+onMounted(() => addEventListener("keydown", dismiss));
+onBeforeUnmount(() => removeEventListener("keydown", dismiss));
+function showMenu(e: MouseEvent, target: Target = null) {
+  menu.value = { x: e.clientX, y: e.clientY, target };
+}
+/** What DO and DO FORM call a file: its name without the extension. */
+const stem = (file: string) => file.replace(/\.[^.]*$/, "");
 
 // The name being asked for: of a new file, or the new one of `file`.
 const naming = ref<{ kind: "program" | "form" | "rename"; file: string | null; value: string } | null>(null);
@@ -94,8 +129,20 @@ const taken = (name: string) =>
   [...info.value!.programs, ...info.value!.forms, ...info.value!.assets].some((f) => f.toLowerCase() === name.toLowerCase());
 
 async function choose(action: string) {
-  const file = menu.value!.file;
+  const target = menu.value!.target;
   menu.value = null;
+  const file = target && "file" in target ? target.file : null;
+  if (action === "open") return emit("open", file!, target?.kind === "class" ? target.line : undefined);
+  if (action === "run") return emit("run", `${target!.kind === "form" ? "DO FORM" : "DO"} ${stem(file!)}`);
+  if (action === "main") return setMain(file!);
+  if (action === "assets") return addAssets();
+  if (action === "refresh") return refresh();
+  if (action === "copy") return navigator.clipboard.writeText(file!).catch((e) => report(String(e)));
+  if (action === "browse" && target?.kind === "table") {
+    // opened in a free area unless it already is open somewhere
+    const name = target.name;
+    return emit("run", `IF !USED("${name}")\n    USE ${name} IN 0\nENDIF\nSELECT ${name}\nBROWSE`, `BROWSE ${name}`);
+  }
   if (action !== "delete") {
     naming.value = { kind: action as "program" | "form" | "rename", file, value: action === "rename" ? file!.replace(/^.*\//, "") : "" };
     return;
@@ -151,12 +198,12 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
 <template>
   <aside
     v-if="project && info"
-    class="flex w-56 shrink-0 flex-col border-r border-neutral-300 text-sm dark:border-neutral-700"
+    class="flex shrink-0 flex-col overflow-hidden text-sm"
     aria-label="Proyecto"
     @contextmenu.prevent="showMenu($event)"
-    @keydown.esc="(menu = null), (naming = null)"
+    @keydown.esc="naming = null"
   >
-    <!-- the menu of the right button: new files anywhere, and what can be done to the file under the pointer -->
+    <!-- the menu of the right button: what can be done to the thing under the pointer, or new files on the panel itself -->
     <div v-if="menu" class="fixed inset-0 z-40" @pointerdown.self="menu = null" @contextmenu.prevent.stop="menu = null">
       <div class="fixed" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }">
         <MenuItems :items="menuItems()" popup="proyecto" @choose="(_, action) => choose(action)" />
@@ -182,7 +229,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
         :disabled="!info.main"
         :aria-label="info.main ? `Ejecutar ${info.main}` : 'Ejecutar el proyecto: marca antes un programa principal'"
         :title="info.main ? `Ejecutar ${info.main}` : 'Marca un programa principal con la estrella'"
-        @click="emit('run', info.main!)"
+        @click="emit('run', `DO ${stem(info.main!)}`)"
       >
         <Play :size="14" />
       </button>
@@ -197,7 +244,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
       <details open>
         <summary :class="title">Programas ({{ info.programs.length }})</summary>
         <div v-for="f in info.programs" :key="f" class="flex items-center">
-          <button type="button" :class="item" @click="emit('open', f)" @contextmenu.prevent.stop="showMenu($event, f)">{{ f }}</button>
+          <button type="button" :class="item" @click="emit('open', f)" @contextmenu.prevent.stop="showMenu($event, { kind: 'program', file: f })">{{ f }}</button>
           <button
             type="button"
             class="shrink-0 rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700"
@@ -213,7 +260,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
       </details>
       <details open>
         <summary :class="title">Formularios ({{ info.forms.length }})</summary>
-        <button v-for="f in info.forms" :key="f" type="button" :class="item" @click="emit('open', f)" @contextmenu.prevent.stop="showMenu($event, f)">
+        <button v-for="f in info.forms" :key="f" type="button" :class="item" @click="emit('open', f)" @contextmenu.prevent.stop="showMenu($event, { kind: 'form', file: f })">
           {{ f }}
         </button>
       </details>
@@ -226,6 +273,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
           :class="item"
           :title="`${c.file}, línea ${c.line}`"
           @click="emit('open', c.file, c.line)"
+          @contextmenu.prevent.stop="showMenu($event, { kind: 'class', file: c.file, line: c.line })"
         >
           {{ c.name }} <span v-if="c.parent" class="text-neutral-500">: {{ c.parent }}</span>
         </button>
@@ -233,7 +281,9 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
       <details open>
         <summary :class="title">Datos ({{ info.tables.length }})</summary>
         <details v-for="t in info.tables" :key="t.name" class="pl-2">
-          <summary class="cursor-pointer truncate px-2 py-0.5 select-none">{{ t.name }}</summary>
+          <summary class="cursor-pointer truncate px-2 py-0.5 select-none" @contextmenu.prevent.stop="showMenu($event, { kind: 'table', name: t.name })">
+            {{ t.name }}
+          </summary>
           <ul class="pl-6 font-mono text-xs">
             <li v-for="f in t.fields" :key="f.name" class="truncate">{{ f.name }} <span class="text-neutral-500">{{ type(f) }}</span></li>
           </ul>
@@ -243,7 +293,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
         <summary :class="title">Recursos ({{ info.assets.length }})</summary>
         <!-- not buttons: a resource is used by writing its path in a property, such as an Image's Picture -->
         <ul>
-          <li v-for="a in info.assets" :key="a" class="truncate px-2 py-0.5 select-text" :title="a" @contextmenu.prevent.stop="showMenu($event, a)">
+          <li v-for="a in info.assets" :key="a" class="truncate px-2 py-0.5 select-text" :title="a" @contextmenu.prevent.stop="showMenu($event, { kind: 'asset', file: a })">
             {{ a }}
           </li>
         </ul>
