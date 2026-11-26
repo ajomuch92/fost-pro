@@ -1,1 +1,7 @@
 @import "tailwindcss";
+
+/* dark: follows the theme chosen in the View menu, not the system's */
+@custom-variant dark (&:where(.dark, .dark *));
+:root.dark {
+  color-scheme: dark;
+}

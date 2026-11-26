@@ -43,13 +43,14 @@ export function menuCode(rows: Row[]): string {
 // Draws a menu as a list of options, indented under the one that opens them, and writes its code.
 import { ref } from "vue";
 import { ArrowDown, ArrowUp, IndentDecrease, IndentIncrease, Plus, Trash2, X } from "@lucide/vue";
+import { t } from "../i18n";
 
 const emit = defineEmits<{ insert: [code: string]; close: [] }>();
 const rows = ref<Row[]>([
-  { level: 0, prompt: "\\<Archivo", command: "" },
-  { level: 1, prompt: "Nuevo", command: "DO nuevo" },
+  { level: 0, prompt: t("\\<Archivo"), command: "" },
+  { level: 1, prompt: t("Nuevo"), command: "DO nuevo" },
   { level: 1, prompt: "-", command: "" },
-  { level: 1, prompt: "Salir", command: "SET SYSMENU TO" },
+  { level: 1, prompt: t("Salir"), command: "SET SYSMENU TO" },
 ]);
 
 /** An option can hang at most one level under the one above it; the first one hangs from nothing. */
@@ -85,32 +86,31 @@ const button = "rounded border border-neutral-400 px-3 py-1 hover:bg-neutral-200
       class="flex max-h-[90%] w-[44rem] max-w-[95%] flex-col rounded border border-neutral-500 bg-white text-sm shadow-xl dark:bg-neutral-800"
       role="dialog"
       aria-modal="true"
-      aria-label="Diseñador de menús"
+      :aria-label="t('Diseñador de menús')"
     >
       <header class="flex items-center border-b border-neutral-300 px-3 py-2 dark:border-neutral-700">
-        <h2 class="flex-1 font-semibold">Diseñador de menús</h2>
-        <button type="button" :class="icon" aria-label="Cerrar" @click="emit('close')"><X :size="16" /></button>
+        <h2 class="flex-1 font-semibold">{{ t("Diseñador de menús") }}</h2>
+        <button type="button" :class="icon" :aria-label="t('Cerrar')" @click="emit('close')"><X :size="16" /></button>
       </header>
       <p class="px-3 pt-2 text-neutral-500">
-        Cada fila es una opción. Las opciones con sangría cuelgan de la que tienen encima. Un guion (-) como texto dibuja una línea separadora y
-        \&lt; subraya la letra que sigue.
+        {{ t("Cada fila es una opción. Las opciones con sangría cuelgan de la que tienen encima. Un guion (-) como texto dibuja una línea separadora y \\< subraya la letra que sigue.") }}
       </p>
       <ol class="min-h-0 flex-1 overflow-y-auto p-3">
         <li v-for="(row, i) in rows" :key="i" class="flex items-center gap-1 py-0.5" :style="{ paddingLeft: `${row.level * 24}px` }">
-          <input v-model="row.prompt" :class="field" class="w-40" placeholder="Texto" :aria-label="`Texto de la opción ${i + 1}`" />
-          <input v-model="row.command" :class="field" class="flex-1 font-mono" placeholder="Comando, p. ej. DO guardar" :aria-label="`Comando de la opción ${i + 1}`" />
-          <button type="button" :class="icon" :disabled="row.level === 0" aria-label="Quitar sangría" @click="indent(i, -1)"><IndentDecrease :size="14" /></button>
-          <button type="button" :class="icon" :disabled="row.level >= deepest(i)" aria-label="Poner sangría" @click="indent(i, 1)"><IndentIncrease :size="14" /></button>
-          <button type="button" :class="icon" :disabled="i === 0" aria-label="Subir" @click="move(i, -1)"><ArrowUp :size="14" /></button>
-          <button type="button" :class="icon" :disabled="i === rows.length - 1" aria-label="Bajar" @click="move(i, 1)"><ArrowDown :size="14" /></button>
-          <button type="button" :class="icon" aria-label="Eliminar" @click="remove(i)"><Trash2 :size="14" /></button>
+          <input v-model="row.prompt" :class="field" class="w-40" :placeholder="t('Texto')" :aria-label="t('Texto de la opción {0}', i + 1)" />
+          <input v-model="row.command" :class="field" class="flex-1 font-mono" :placeholder="t('Comando, p. ej. DO guardar')" :aria-label="t('Comando de la opción {0}', i + 1)" />
+          <button type="button" :class="icon" :disabled="row.level === 0" :aria-label="t('Quitar sangría')" @click="indent(i, -1)"><IndentDecrease :size="14" /></button>
+          <button type="button" :class="icon" :disabled="row.level >= deepest(i)" :aria-label="t('Poner sangría')" @click="indent(i, 1)"><IndentIncrease :size="14" /></button>
+          <button type="button" :class="icon" :disabled="i === 0" :aria-label="t('Subir')" @click="move(i, -1)"><ArrowUp :size="14" /></button>
+          <button type="button" :class="icon" :disabled="i === rows.length - 1" :aria-label="t('Bajar')" @click="move(i, 1)"><ArrowDown :size="14" /></button>
+          <button type="button" :class="icon" :aria-label="t('Eliminar')" @click="remove(i)"><Trash2 :size="14" /></button>
         </li>
       </ol>
       <footer class="flex items-center gap-2 border-t border-neutral-300 px-3 py-2 dark:border-neutral-700">
-        <button type="button" :class="button" class="flex items-center gap-1" @click="add"><Plus :size="14" aria-hidden="true" />Agregar opción</button>
+        <button type="button" :class="button" class="flex items-center gap-1" @click="add"><Plus :size="14" aria-hidden="true" />{{ t("Agregar opción") }}</button>
         <span class="flex-1" />
-        <button type="button" :class="button" @click="emit('close')">Cancelar</button>
-        <button type="button" :class="button" :disabled="!rows.length" @click="emit('insert', menuCode(rows))">Insertar en el programa</button>
+        <button type="button" :class="button" @click="emit('close')">{{ t("Cancelar") }}</button>
+        <button type="button" :class="button" :disabled="!rows.length" @click="emit('insert', menuCode(rows))">{{ t("Insertar en el programa") }}</button>
       </footer>
     </section>
   </div>

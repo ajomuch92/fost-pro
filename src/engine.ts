@@ -2,6 +2,7 @@
 import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { lang } from "./i18n";
 
 /** An object of a running form. Property names are upper-cased, as the interpreter keeps them. */
 export type FormNode = {
@@ -80,19 +81,47 @@ function remembered(key: string) {
 }
 /** The pictures and other files of the open project's `assets` folder, as a form names them. */
 export const assets = ref<string[]>([]);
+/** Keeps a setting for the next session. */
+function remember(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // not remembered, nothing else is lost
+  }
+}
+
 /** The size in pixels of an area of the IDE, remembered between sessions. 0 is closed. */
-export function areaSize(key: string, initial: number) {
+function areaSize(key: string, initial: number) {
   const stored = Number(remembered(`fost-size-${key}`) ?? NaN);
   const size = ref(Number.isFinite(stored) ? stored : initial);
-  watch(size, (px) => {
-    try {
-      localStorage.setItem(`fost-size-${key}`, String(px));
-    } catch {
-      // not remembered, nothing else is lost
-    }
-  });
+  watch(size, (px) => remember(`fost-size-${key}`, String(px)));
   return size;
 }
+/** The areas of the IDE that can be resized and closed: the bars between them and the View menu change these. */
+export const areas = {
+  project: areaSize("project", 224),
+  command: areaSize("command", 240),
+  palette: areaSize("palette", 192),
+  props: areaSize("props", 272),
+  code: areaSize("code", 220),
+};
+// what each area opens to again when the View menu brings it back
+const opened = Object.fromEntries(Object.entries(areas).map(([key, size]) => [key, size.value || 220]));
+for (const [key, size] of Object.entries(areas)) watch(size, (px) => px && (opened[key] = px));
+export function toggleArea(key: keyof typeof areas) {
+  areas[key].value = areas[key].value ? 0 : opened[key];
+}
+
+/** Whether the IDE is drawn dark. The system's preference until the user chooses. */
+export const dark = ref((remembered("fost-theme") ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark");
+watch(
+  dark,
+  (on) => {
+    document.documentElement.classList.toggle("dark", on);
+    remember("fost-theme", on ? "dark" : "light");
+  },
+  { immediate: true },
+);
 
 /** Folder of the open project: a project is a folder. Remembered between sessions. */
 export const project = ref<string | null>(remembered("fost-project"));
@@ -119,9 +148,14 @@ export const report = (text: string) => entries.value.push({ kind: "err", text }
 type HelpEntry = { syntax: string; text: string; group?: string };
 /** Everything the language supports, as the interpreter itself lists it. */
 export const reference = ref<{ commands: HelpEntry[]; functions: HelpEntry[]; members: HelpEntry[] }>({ commands: [], functions: [], members: [] });
-invoke<typeof reference.value>("reference").then(
-  (r) => (reference.value = r),
-  (e) => report(String(e)),
+watch(
+  lang,
+  (l) =>
+    invoke<typeof reference.value>("reference", { english: l === "en" }).then(
+      (r) => (reference.value = r),
+      (e) => report(String(e)),
+    ),
+  { immediate: true },
 );
 /** What the Edit menu can ask of an editor. */
 export type EditAction = "undo" | "redo" | "cut" | "copy" | "paste" | "selectAll" | "find";

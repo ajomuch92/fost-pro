@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { Play, Plus, RefreshCw, Star, X } from "@lucide/vue";
 import { assets, type MenuItem, pending, project, report } from "../engine";
+import { t } from "../i18n";
 import MenuItems from "./MenuItems.vue";
 
 type Field = { name: string; kind: string; width: number; decimals: number };
@@ -64,7 +65,7 @@ async function setMain(program: string) {
 
 /** Copies files the user picks into the project's `assets` folder. */
 async function addAssets() {
-  const chosen = await open({ multiple: true, title: "Agregar recursos al proyecto" });
+  const chosen = await open({ multiple: true, title: t("Agregar recursos al proyecto") });
   for (const from of chosen ?? []) {
     const to = `${project.value}/assets/${from.replace(/^.*[\\/]/, "")}`;
     await invoke("copy_file", { from, to }).catch((e) => report(String(e)));
@@ -86,7 +87,8 @@ type Target =
 const menu = ref<{ x: number; y: number; target: Target } | null>(null);
 /** What can be done to the thing under the pointer. */
 function menuItems(): MenuItem[] {
-  const item = (key: string, prompt: string): MenuItem => ({ key, prompt, disabled: false, popup: null, items: null });
+  // a separator's prompt is a mark, not a text
+  const item = (key: string, prompt: string): MenuItem => ({ key, prompt: key === "-" ? prompt : t(prompt), disabled: false, popup: null, items: null });
   const forFile = [item("-", "\\-"), item("rename", "Renombrar..."), item("delete", "Eliminar")];
   const target = menu.value!.target;
   switch (target?.kind) {
@@ -147,7 +149,7 @@ async function choose(action: string) {
     naming.value = { kind: action as "program" | "form" | "rename", file, value: action === "rename" ? file!.replace(/^.*\//, "") : "" };
     return;
   }
-  if (!(await confirm(`¿Eliminar ${file}? No se puede deshacer.`, { kind: "warning" }))) return;
+  if (!(await confirm(t("¿Eliminar {0}? No se puede deshacer.", file), { kind: "warning" }))) return;
   try {
     await invoke("delete_file", { path: `${project.value}/${file}` });
     if (info.value!.main === file) await save(info.value!.file!, null);
@@ -199,7 +201,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
   <aside
     v-if="project && info"
     class="flex shrink-0 flex-col overflow-hidden text-sm"
-    aria-label="Proyecto"
+    :aria-label="t('Proyecto')"
     @contextmenu.prevent="showMenu($event)"
     @keydown.esc="naming = null"
   >
@@ -211,7 +213,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
     </div>
     <form v-if="naming" class="border-b border-neutral-300 p-2 dark:border-neutral-700" @submit.prevent="named">
       <label class="block">
-        {{ naming.kind === "rename" ? `Nuevo nombre de ${naming.file}` : naming.kind === "form" ? "Nombre del formulario" : "Nombre del programa" }}
+        {{ naming.kind === "rename" ? t("Nuevo nombre de {0}", naming.file) : t(naming.kind === "form" ? "Nombre del formulario" : "Nombre del programa") }}
         <input
           v-model="naming.value"
           v-focus
@@ -227,31 +229,31 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
         type="button"
         class="rounded p-1 hover:bg-neutral-200 disabled:opacity-40 dark:hover:bg-neutral-700"
         :disabled="!info.main"
-        :aria-label="info.main ? `Ejecutar ${info.main}` : 'Ejecutar el proyecto: marca antes un programa principal'"
-        :title="info.main ? `Ejecutar ${info.main}` : 'Marca un programa principal con la estrella'"
+        :aria-label="info.main ? t('Ejecutar {0}', info.main) : t('Ejecutar el proyecto: marca antes un programa principal')"
+        :title="info.main ? t('Ejecutar {0}', info.main) : t('Marca un programa principal con la estrella')"
         @click="emit('run', `DO ${stem(info.main!)}`)"
       >
         <Play :size="14" />
       </button>
-      <button type="button" class="rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700" aria-label="Actualizar" @click="refresh">
+      <button type="button" class="rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700" :aria-label="t('Actualizar')" @click="refresh">
         <RefreshCw :size="14" />
       </button>
-      <button type="button" class="rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700" aria-label="Cerrar proyecto" @click="project = null">
+      <button type="button" class="rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700" :aria-label="t('Cerrar proyecto')" @click="project = null">
         <X :size="14" />
       </button>
     </header>
     <div class="min-h-0 flex-1 overflow-y-auto">
       <details open>
-        <summary :class="title">Programas ({{ info.programs.length }})</summary>
+        <summary :class="title">{{ t("Programas ({0})", info.programs.length) }}</summary>
         <div v-for="f in info.programs" :key="f" class="flex items-center">
           <button type="button" :class="item" @click="emit('open', f)" @contextmenu.prevent.stop="showMenu($event, { kind: 'program', file: f })">{{ f }}</button>
           <button
             type="button"
             class="shrink-0 rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700"
             :class="info.main === f ? 'text-amber-500' : 'text-neutral-400'"
-            :aria-label="`${f}: programa principal`"
+            :aria-label="t('{0}: programa principal', f)"
             :aria-pressed="info.main === f"
-            title="Programa principal"
+            :title="t('Programa principal')"
             @click="setMain(f)"
           >
             <Star :size="14" :fill="info.main === f ? 'currentColor' : 'none'" />
@@ -259,19 +261,19 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
         </div>
       </details>
       <details open>
-        <summary :class="title">Formularios ({{ info.forms.length }})</summary>
+        <summary :class="title">{{ t("Formularios ({0})", info.forms.length) }}</summary>
         <button v-for="f in info.forms" :key="f" type="button" :class="item" @click="emit('open', f)" @contextmenu.prevent.stop="showMenu($event, { kind: 'form', file: f })">
           {{ f }}
         </button>
       </details>
       <details open>
-        <summary :class="title">Clases ({{ info.classes.length }})</summary>
+        <summary :class="title">{{ t("Clases ({0})", info.classes.length) }}</summary>
         <button
           v-for="c in info.classes"
           :key="c.file + c.line"
           type="button"
           :class="item"
-          :title="`${c.file}, línea ${c.line}`"
+          :title="t('{0}, línea {1}', c.file, c.line)"
           @click="emit('open', c.file, c.line)"
           @contextmenu.prevent.stop="showMenu($event, { kind: 'class', file: c.file, line: c.line })"
         >
@@ -279,7 +281,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
         </button>
       </details>
       <details open>
-        <summary :class="title">Datos ({{ info.tables.length }})</summary>
+        <summary :class="title">{{ t("Datos ({0})", info.tables.length) }}</summary>
         <details v-for="t in info.tables" :key="t.name" class="pl-2">
           <summary class="cursor-pointer truncate px-2 py-0.5 select-none" @contextmenu.prevent.stop="showMenu($event, { kind: 'table', name: t.name })">
             {{ t.name }}
@@ -290,7 +292,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
         </details>
       </details>
       <details open>
-        <summary :class="title">Recursos ({{ info.assets.length }})</summary>
+        <summary :class="title">{{ t("Recursos ({0})", info.assets.length) }}</summary>
         <!-- not buttons: a resource is used by writing its path in a property, such as an Image's Picture -->
         <ul>
           <li v-for="a in info.assets" :key="a" class="truncate px-2 py-0.5 select-text" :title="a" @contextmenu.prevent.stop="showMenu($event, { kind: 'asset', file: a })">
@@ -298,7 +300,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
           </li>
         </ul>
         <button type="button" :class="item" class="flex items-center gap-1 text-neutral-500" @click="addAssets">
-          <Plus :size="14" aria-hidden="true" />Agregar...
+          <Plus :size="14" aria-hidden="true" />{{ t("Agregar...") }}
         </button>
       </details>
     </div>

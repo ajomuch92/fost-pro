@@ -4,6 +4,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import { Copy, Minus, Square, X } from "@lucide/vue";
 import { type DrawNode, focus, forms, TOP_LEVEL, uiEvent, type FormNode } from "../engine";
 import FormControl, { colorCss } from "./FormControl.vue";
+import { t } from "../i18n";
 
 const props = defineProps<{ only?: number }>();
 const layer = ref<HTMLElement>();
@@ -93,7 +94,7 @@ watch(focus, async (id) => {
           v-if="form.props.MINBUTTON"
           type="button"
           class="rounded p-1 hover:bg-blue-500"
-          :aria-label="form.props.WINDOWSTATE === MINIMIZED ? 'Restaurar' : 'Minimizar'"
+          :aria-label="t(form.props.WINDOWSTATE === MINIMIZED ? 'Restaurar' : 'Minimizar')"
           @pointerdown.stop
           @click="setState(form, MINIMIZED)"
         >
@@ -103,7 +104,7 @@ watch(focus, async (id) => {
           v-if="form.props.MAXBUTTON"
           type="button"
           class="rounded p-1 hover:bg-blue-500"
-          :aria-label="form.props.WINDOWSTATE === MAXIMIZED ? 'Restaurar' : 'Maximizar'"
+          :aria-label="t(form.props.WINDOWSTATE === MAXIMIZED ? 'Restaurar' : 'Maximizar')"
           @pointerdown.stop
           @click="setState(form, MAXIMIZED)"
         >
@@ -112,7 +113,7 @@ watch(focus, async (id) => {
         <button
           type="button"
           class="rounded p-1 hover:bg-red-600"
-          aria-label="Cerrar"
+          :aria-label="t('Cerrar')"
           @pointerdown.stop
           @click="uiEvent(form.id, {}, 'Close')"
         >

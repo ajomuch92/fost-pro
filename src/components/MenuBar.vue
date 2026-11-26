@@ -2,6 +2,7 @@
 // The menus a program has put on screen, as bars under the toolbar.
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { menuEvent, menus } from "../engine";
+import { t } from "../i18n";
 import MenuItems, { Prompt } from "./MenuItems.vue";
 
 const root = ref<HTMLElement>();
@@ -34,7 +35,7 @@ onBeforeUnmount(() => {
       v-for="menu in menus"
       :key="menu.name"
       role="menubar"
-      :aria-label="`Menú ${menu.name}`"
+      :aria-label="t('Menú {0}', menu.name)"
       class="flex border-b border-neutral-300 px-1 text-sm dark:border-neutral-700"
     >
       <div v-for="pad in menu.items" :key="pad.key" class="relative">

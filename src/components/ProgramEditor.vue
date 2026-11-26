@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { EditorView, basicSetup } from "codemirror";
 import { keymap } from "@codemirror/view";
 import { indentWithTab, redo, selectAll, undo } from "@codemirror/commands";
 import { StreamLanguage } from "@codemirror/language";
+import { Compartment } from "@codemirror/state";
 import type { CompletionContext } from "@codemirror/autocomplete";
 import { openSearchPanel } from "@codemirror/search";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { type EditAction, reference } from "../engine";
+import { dark, type EditAction, reference } from "../engine";
+import { t } from "../i18n";
 import { fost, keywords } from "../fostLanguage";
 
 /** `members` gives the names to offer after a dot, such as the controls of the form being designed. */
@@ -45,6 +47,9 @@ function complete(context: CompletionContext) {
   };
 }
 
+const theme = new Compartment();
+watch(dark, (on) => view.dispatch({ effects: theme.reconfigure(on ? oneDark : []) }));
+
 onMounted(() => {
   const language = StreamLanguage.define(fost);
   view = new EditorView({
@@ -56,9 +61,8 @@ onMounted(() => {
       language.data.of({ autocomplete: complete }),
       EditorView.updateListener.of((u) => u.docChanged && emit("change")),
       EditorView.theme({ "&": { height: "100%" }, "&.cm-focused": { outline: "none" } }),
-      EditorView.contentAttributes.of({ "aria-label": "Editor de programa" }),
-      // shortcut: theme picked once at start-up, restart to follow a system theme change
-      matchMedia("(prefers-color-scheme: dark)").matches ? oneDark : [],
+      EditorView.contentAttributes.of({ "aria-label": t("Editor de programa") }),
+      theme.of(dark.value ? oneDark : []),
     ],
   });
 });

@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { AppWindow, CircleQuestionMark, FilePlus, FolderKanban, FolderOpen, Menu, Pencil, Play, Save } from "@lucide/vue";
-import { areaSize, dir, type EditAction, helpOpen, type MenuItem, openRequest, project, report, run, runForm } from "./engine";
+import { AppWindow, CircleQuestionMark, Eye, FilePlus, FolderKanban, FolderOpen, Menu, Pencil, Play, Save } from "@lucide/vue";
+import { areas, dark, dir, type EditAction, helpOpen, type MenuItem, openRequest, project, report, run, runForm, toggleArea } from "./engine";
 import CommandWindow from "./components/CommandWindow.vue";
 import FormDesigner from "./components/FormDesigner.vue";
 import FormLayer from "./components/FormLayer.vue";
@@ -13,6 +13,7 @@ import MenuDesigner from "./components/MenuDesigner.vue";
 import MenuItems from "./components/MenuItems.vue";
 import HelpScreen from "./components/HelpScreen.vue";
 import { closeFormWindows } from "./formWindows";
+import { lang, t } from "./i18n";
 import ProjectPanel from "./components/ProjectPanel.vue";
 import ResizeHandle from "./components/ResizeHandle.vue";
 import PromptDialog from "./components/PromptDialog.vue";
@@ -23,20 +24,20 @@ type Kind = "program" | "form";
 const kinds = {
   program: { extension: "fost", label: "Programa Fost", untitled: "programa" },
   form: { extension: "fostform", label: "Formulario Fost", untitled: "formulario" },
+  // `label` is shown through t(); `untitled` is a file name, the same in every language
 };
 const kindOf = (file: string): Kind => (/\.fostform$/i.test(file) ? "form" : "program");
 
 const editor = ref<InstanceType<typeof ProgramEditor>>();
 const designer = ref<InstanceType<typeof FormDesigner>>();
 const panel = ref<InstanceType<typeof ProjectPanel>>();
-const projectWidth = areaSize("project", 224);
-const commandHeight = areaSize("command", 240);
+const { project: projectWidth, command: commandHeight } = areas;
 const kind = ref<Kind>("program");
 const path = ref<string | null>(null);
 const dirty = ref(false);
 
 const view = (k: Kind) => (k === "form" ? designer.value! : editor.value!);
-const name = computed(() => path.value?.replace(/^.*[\\/]/, "") ?? "sin título");
+const name = computed(() => path.value?.replace(/^.*[\\/]/, "") ?? t("sin título"));
 /** The file name without its extension: what DO and DO FORM call it. */
 const stem = (file: string) => file.replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "");
 
@@ -46,7 +47,7 @@ watch(path, (p) => {
 });
 
 const canDiscard = async () =>
-  !dirty.value || (await confirm("Hay cambios sin guardar. ¿Descartarlos?", { kind: "warning" }));
+  !dirty.value || (await confirm(t("Hay cambios sin guardar. ¿Descartarlos?"), { kind: "warning" }));
 
 /** Runs a file action; a failure is shown in the command window instead of being lost. */
 async function attempt(action: () => Promise<unknown>) {
@@ -86,14 +87,14 @@ const newDoc = (k: Kind) =>
 const openFile = () =>
   attempt(async () => {
     if (!(await canDiscard())) return;
-    const chosen = await open({ filters: [{ name: "Programas y formularios Fost", extensions: ["fost", "fostform"] }] });
+    const chosen = await open({ filters: [{ name: t("Programas y formularios Fost"), extensions: ["fost", "fostform"] }] });
     if (chosen) await load(chosen);
   });
 
 const saveFile = () =>
   attempt(async () => {
     const { extension, label, untitled } = kinds[kind.value];
-    const filters = [{ name: label, extensions: [extension] }];
+    const filters = [{ name: t(label), extensions: [extension] }];
     // a new file is offered next to the others of the project
     const folder = dir.value ? `${dir.value}/` : "";
     let target = path.value ?? (await saveDialog({ filters, defaultPath: `${folder}${untitled}.${extension}` }));
@@ -109,8 +110,11 @@ const saveFile = () =>
 /** A project is a folder: the one chosen here, which the dialog can also create. */
 const openProject = () =>
   attempt(async () => {
-    const chosen = await open({ directory: true, title: "Carpeta del proyecto" });
-    if (chosen) project.value = chosen;
+    const chosen = await open({ directory: true, title: t("Carpeta del proyecto") });
+    if (!chosen) return;
+    project.value = chosen;
+    // a panel left closed would hide the project that was just opened
+    if (!areas.project.value) toggleArea("project");
   });
 
 /** Runs something the project panel asks for, in the project's folder: its main program, a form, a table to browse. */
@@ -129,7 +133,8 @@ function moved(from: string, to: string | null) {
 // The Edit menu acts on the program's editor, or on the form designer, which decides between its drawing and its code.
 const editOpen = ref(false);
 const editMenu = ref<HTMLElement>();
-const editItems: MenuItem[] = (
+const item = (key: string, prompt: string): MenuItem => ({ key, prompt, disabled: false, popup: null, items: null });
+const editItems = () =>
   [
     ["undo", "Deshacer (Ctrl+Z)"],
     ["redo", "Rehacer (Ctrl+Y)"],
@@ -140,13 +145,43 @@ const editItems: MenuItem[] = (
     ["selectAll", "Seleccionar todo (Ctrl+A)"],
     ["--", "\\-"],
     ["find", "Buscar y reemplazar (Ctrl+F)"],
-  ] as const
-).map(([key, prompt]) => ({ key, prompt, disabled: false, popup: null, items: null }));
+  ].map(([key, prompt]) => item(key, key.startsWith("-") ? prompt : t(prompt)));
 function edit(action: string) {
   editOpen.value = false;
   attempt(async () => view(kind.value).edit(action as EditAction));
 }
-const closeEdit = (e: Event) => editMenu.value?.contains(e.target as Node) || (editOpen.value = false);
+// The View menu: which areas show, the help, the theme and the language. A tick marks what is on.
+const viewOpen = ref(false);
+const viewMenu = ref<HTMLElement>();
+const viewItems = () => {
+  const check = (key: string, on: unknown, label: string) => item(key, `${on ? "✓" : " "} ${label}`);
+  const area = (key: keyof typeof areas, label: string) => check(key, areas[key].value, t(label));
+  return [
+    // always offered: with no project open, choosing it asks for the project's folder
+    check("project", project.value && areas.project.value, t("Panel del proyecto")),
+    area("command", "Ventana de comandos"),
+    // the designer's own areas only mean something while a form is open
+    ...(kind.value === "form" ? [area("palette", "Controles"), area("props", "Propiedades"), area("code", "Código")] : []),
+    check("help", helpOpen.value, t("Ayuda")),
+    item("-", "\\-"),
+    check("dark", dark.value, t("Tema oscuro")),
+    item("--", "\\-"),
+    check("en", lang.value === "en", "English"),
+    check("es", lang.value === "es", "Español"),
+  ];
+};
+function viewChoice(key: string) {
+  viewOpen.value = false;
+  if (key === "help") helpOpen.value = !helpOpen.value;
+  else if (key === "dark") dark.value = !dark.value;
+  else if (key === "en" || key === "es") lang.value = key;
+  else if (key === "project" && !project.value) openProject();
+  else toggleArea(key as keyof typeof areas);
+}
+function closeEdit(e: Event) {
+  if (!editMenu.value?.contains(e.target as Node)) editOpen.value = false;
+  if (!viewMenu.value?.contains(e.target as Node)) viewOpen.value = false;
+}
 
 const menuDesigner = ref(false);
 /** The menu designer's code goes into the program, where the cursor is. */
@@ -185,6 +220,7 @@ watch(openRequest, (request) => {
 });
 
 function shortcut(e: KeyboardEvent) {
+  if (e.key === "Escape") editOpen.value = viewOpen.value = false;
   // undo and redo of the form's drawing; fields and code editors keep their own
   const typing = (e.target as HTMLElement).closest?.("input, textarea, select, .cm-editor");
   const z = (e.ctrlKey || e.metaKey) && ["z", "y"].includes(e.key.toLowerCase());
@@ -231,39 +267,49 @@ const button = "flex items-center gap-1.5 rounded px-2 py-1 hover:bg-neutral-200
 <template>
   <main class="flex h-screen flex-col bg-white text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
     <header class="flex items-center gap-1 border-b border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700">
-      <button type="button" :class="button" @click="newDoc('program')"><FilePlus :size="16" aria-hidden="true" />Nuevo programa</button>
-      <button type="button" :class="button" @click="newDoc('form')"><AppWindow :size="16" aria-hidden="true" />Nuevo formulario</button>
-      <button type="button" :class="button" title="Abrir o crear la carpeta de un proyecto" @click="openProject"><FolderKanban :size="16" aria-hidden="true" />Proyecto</button>
-      <button type="button" :class="button" title="Ctrl+O" @click="openFile"><FolderOpen :size="16" aria-hidden="true" />Abrir</button>
-      <button type="button" :class="button" title="Ctrl+S" @click="saveFile"><Save :size="16" aria-hidden="true" />Guardar</button>
+      <button type="button" :class="button" @click="newDoc('program')"><FilePlus :size="16" aria-hidden="true" />{{ t("Nuevo programa") }}</button>
+      <button type="button" :class="button" @click="newDoc('form')"><AppWindow :size="16" aria-hidden="true" />{{ t("Nuevo formulario") }}</button>
+      <button type="button" :class="button" :title="t('Abrir o crear la carpeta de un proyecto')" @click="openProject">
+        <FolderKanban :size="16" aria-hidden="true" />{{ t("Proyecto") }}
+      </button>
+      <button type="button" :class="button" title="Ctrl+O" @click="openFile"><FolderOpen :size="16" aria-hidden="true" />{{ t("Abrir") }}</button>
+      <button type="button" :class="button" title="Ctrl+S" @click="saveFile"><Save :size="16" aria-hidden="true" />{{ t("Guardar") }}</button>
       <div ref="editMenu" class="relative">
-        <button type="button" :class="button" aria-haspopup="menu" :aria-expanded="editOpen" @click="editOpen = !editOpen">
-          <Pencil :size="16" aria-hidden="true" />Editar
+        <button type="button" :class="button" aria-haspopup="menu" :aria-expanded="editOpen" @click="(editOpen = !editOpen), (viewOpen = false)">
+          <Pencil :size="16" aria-hidden="true" />{{ t("Editar") }}
         </button>
-        <MenuItems v-if="editOpen" :items="editItems" popup="editar" class="top-full left-0" @choose="(_, action) => edit(action)" />
+        <MenuItems v-if="editOpen" :items="editItems()" popup="editar" class="top-full left-0" @choose="(_, action) => edit(action)" />
+      </div>
+      <div ref="viewMenu" class="relative">
+        <button type="button" :class="button" aria-haspopup="menu" :aria-expanded="viewOpen" @click="(viewOpen = !viewOpen), (editOpen = false)">
+          <Eye :size="16" aria-hidden="true" />{{ t("Ver") }}
+        </button>
+        <MenuItems v-if="viewOpen" :items="viewItems()" popup="ver" class="top-full left-0" @choose="(_, key) => viewChoice(key)" />
       </div>
       <button
         type="button"
         :class="button"
         :disabled="kind !== 'program'"
         class="disabled:opacity-40"
-        title="Diseñar un menú y escribir su código en el programa"
+        :title="t('Diseñar un menú y escribir su código en el programa')"
         @click="menuDesigner = true"
       >
-        <Menu :size="16" aria-hidden="true" />Menú
+        <Menu :size="16" aria-hidden="true" />{{ t("Menú") }}
       </button>
-      <button type="button" :class="button" title="F5" @click="runDoc"><Play :size="16" aria-hidden="true" />Ejecutar (F5)</button>
-      <button type="button" :class="button" title="F1" @click="helpOpen = !helpOpen"><CircleQuestionMark :size="16" aria-hidden="true" />Ayuda (F1)</button>
-      <span class="ml-auto text-neutral-500">{{ name }}{{ dirty ? " (sin guardar)" : "" }}</span>
+      <button type="button" :class="button" title="F5" @click="runDoc"><Play :size="16" aria-hidden="true" />{{ t("Ejecutar (F5)") }}</button>
+      <button type="button" :class="button" title="F1" @click="helpOpen = !helpOpen">
+        <CircleQuestionMark :size="16" aria-hidden="true" />{{ t("Ayuda (F1)") }}
+      </button>
+      <span class="ml-auto truncate text-neutral-500">{{ name }}{{ dirty ? t(" (sin guardar)") : "" }}</span>
     </header>
     <MenuBar />
     <div class="flex min-h-0 flex-1">
     <ProjectPanel v-show="projectWidth" ref="panel" :style="{ width: `${projectWidth}px` }" @open="openFromProject" @run="runProject" @moved="moved" />
-    <ResizeHandle v-if="project" v-model="projectWidth" label="Panel del proyecto" />
+    <ResizeHandle v-if="project" v-model="projectWidth" :label="t('Panel del proyecto')" />
     <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <ProgramEditor v-show="kind === 'program'" ref="editor" class="min-h-0 flex-1" @change="dirty = true" />
       <FormDesigner v-show="kind === 'form'" ref="designer" class="min-h-0 flex-1" @change="dirty = true" />
-      <ResizeHandle v-model="commandHeight" label="Ventana de comandos" vertical after />
+      <ResizeHandle v-model="commandHeight" :label="t('Ventana de comandos')" vertical after />
       <CommandWindow v-show="commandHeight" class="shrink-0" :style="{ height: `${commandHeight}px` }" />
       <FormLayer />
       <HelpScreen />

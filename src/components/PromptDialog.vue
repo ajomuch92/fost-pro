@@ -2,6 +2,7 @@
 // The question of an INPUTBOX() a program is waiting on.
 import { nextTick, ref, watch } from "vue";
 import { answerPrompt, question } from "../engine";
+import { t } from "../i18n";
 
 const text = ref("");
 const input = ref<HTMLInputElement>();
@@ -31,8 +32,8 @@ const button = "rounded border border-neutral-400 px-3 py-1 hover:bg-neutral-200
         <input ref="input" v-model="text" class="mt-1 w-full rounded border border-neutral-400 bg-transparent px-2 py-1" />
       </label>
       <div class="mt-3 flex justify-end gap-2">
-        <button type="button" :class="button" @click="answerPrompt(null)">Cancelar</button>
-        <button type="submit" :class="button">Aceptar</button>
+        <button type="button" :class="button" @click="answerPrompt(null)">{{ t("Cancelar") }}</button>
+        <button type="submit" :class="button">{{ t("Aceptar") }}</button>
       </div>
     </form>
   </div>

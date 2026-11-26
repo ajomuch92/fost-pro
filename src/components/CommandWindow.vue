@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
 import { entries, pending, run as runCode, stop } from "../engine";
+import { message, t } from "../i18n";
 
 const input = ref("");
 const log = ref<HTMLElement>();
@@ -36,10 +37,10 @@ function escape() {
 </script>
 
 <template>
-  <section class="flex flex-col font-mono text-sm" aria-label="Ventana de comandos">
+  <section class="flex flex-col font-mono text-sm" :aria-label="t('Ventana de comandos')">
     <div ref="log" class="flex-1 overflow-y-auto p-3" role="log" aria-live="polite">
       <p v-if="!entries.length" class="text-neutral-500">
-        Escribe un comando y pulsa Enter. Por ejemplo: ? "Hola", 2 + 2
+        {{ t('Escribe un comando y pulsa Enter. Por ejemplo: ? "Hola", 2 + 2') }}
       </p>
       <pre
         v-for="(e, i) in entries"
@@ -49,7 +50,7 @@ function escape() {
           'text-neutral-500': e.kind === 'cmd',
           'text-red-600 dark:text-red-400': e.kind === 'err',
         }"
-        >{{ e.kind === "cmd" ? "> " + e.text : e.text }}</pre
+        >{{ e.kind === "cmd" ? "> " + e.text : e.kind === "err" ? message(e.text) : e.text }}</pre
       >
     </div>
     <div class="flex items-start gap-2 border-t border-neutral-300 p-3 dark:border-neutral-700">
@@ -58,8 +59,8 @@ function escape() {
         v-model="input"
         class="flex-1 resize-none bg-transparent outline-none"
         :rows="input.split('\n').length"
-        aria-label="Comando"
-        placeholder="Enter ejecuta · Shift+Enter nueva línea · Esc detiene"
+        :aria-label="t('Comando')"
+        :placeholder="t('Enter ejecuta · Shift+Enter nueva línea · Esc detiene')"
         spellcheck="false"
         autocapitalize="off"
         autofocus
@@ -74,7 +75,7 @@ function escape() {
         class="rounded border border-neutral-400 px-2 hover:bg-neutral-200 dark:hover:bg-neutral-700"
         @click="stop"
       >
-        Detener
+        {{ t("Detener") }}
       </button>
     </div>
   </section>

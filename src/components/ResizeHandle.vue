@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "../i18n";
 // The bar between two areas. Dragging it resizes the area it belongs to, and dragging far enough
 // closes it; a double click closes the area or brings it back.
 const CLOSE_BELOW = 60;
@@ -55,7 +56,7 @@ function keyed(e: KeyboardEvent) {
     :aria-label="label"
     :aria-orientation="vertical ? 'horizontal' : 'vertical'"
     :aria-valuenow="size"
-    :title="`${label}: arrastra para ajustar; doble clic para ${size ? 'cerrar' : 'abrir'}`"
+    :title="t(size ? '{0}: arrastra para ajustar; doble clic para cerrar' : '{0}: arrastra para ajustar; doble clic para abrir', label)"
     @pointerdown.prevent="drag"
     @dblclick="toggle"
     @keydown="keyed"

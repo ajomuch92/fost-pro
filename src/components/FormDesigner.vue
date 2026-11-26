@@ -27,7 +27,8 @@ import {
   Type,
   X,
 } from "@lucide/vue";
-import { areaSize, assets, classes, type DrawNode, type EditAction } from "../engine";
+import { areas, assets, classes, type DrawNode, type EditAction } from "../engine";
+import { t } from "../i18n";
 import FormControl, { colorCss, pageTop } from "./FormControl.vue";
 import ProgramEditor from "./ProgramEditor.vue";
 import ResizeHandle from "./ResizeHandle.vue";
@@ -197,9 +198,9 @@ function rename(node: DesignNode, name: string) {
   const siblings = parentOf(node)?.controls ?? [];
   const taken = siblings.some((n) => n !== node && String(n.props.Name).toUpperCase() === name.toUpperCase());
   nameError.value = !/^[A-Za-z_]\w*$/.test(name)
-    ? "Usa letras, números y guion bajo, sin empezar por un número."
+    ? t("Usa letras, números y guion bajo, sin empezar por un número.")
     : taken
-      ? "Ya hay un objeto con ese nombre."
+      ? t("Ya hay un objeto con ese nombre.")
       : "";
   if (nameError.value) return;
   node.props.Name = name;
@@ -403,9 +404,7 @@ function step(to: number) {
   emit("change");
 }
 
-const paletteWidth = areaSize("palette", 192);
-const propsWidth = areaSize("props", 272);
-const codeHeight = areaSize("code", 220);
+const { palette: paletteWidth, props: propsWidth, code: codeHeight } = areas;
 
 /** Whether the code editor, and not the drawing, was used last: Edit acts on that one. */
 const inCode = ref(false);
@@ -444,7 +443,7 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
       v-show="paletteWidth"
       class="flex shrink-0 flex-col gap-1 overflow-y-auto p-2"
       :style="{ width: `${paletteWidth}px` }"
-      aria-label="Agregar control"
+      :aria-label="t('Agregar control')"
     >
       <button
         v-for="c in classes.filter((c) => !['Custom', 'Form', 'Column', 'Header'].includes(c.name))"
@@ -452,14 +451,14 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
         type="button"
         :class="tool"
         :disabled="!hostFor(c.name)"
-        :title="hostFor(c.name) ? `Agregar a ${hostFor(c.name)!.props.Name}` : 'Selecciona antes el grupo o el marco de páginas que lo contendrá'"
+        :title="hostFor(c.name) ? t('Agregar a {0}', hostFor(c.name)!.props.Name) : t('Selecciona antes el grupo o el marco de páginas que lo contendrá')"
         @click="add(c.name)"
       >
         <component :is="icons[c.name]" :size="16" class="shrink-0" aria-hidden="true" />
         {{ c.name }}
       </button>
     </nav>
-    <ResizeHandle v-model="paletteWidth" label="Controles" />
+    <ResizeHandle v-model="paletteWidth" :label="t('Controles')" />
 
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
       <div
@@ -519,7 +518,7 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
               }"
               tabindex="0"
               role="button"
-              :aria-label="`${p.node.props.Name}: flechas para mover, Mayús+flechas para cambiar el tamaño, Supr para eliminar`"
+              :aria-label="t('{0}: flechas para mover, Mayús+flechas para cambiar el tamaño, Supr para eliminar', p.node.props.Name)"
               @pointerdown.stop="startDrag(p.node, $event, 'move')"
               @focus="selected = p.node"
               @keydown="keyed(p.node, $event)"
@@ -531,15 +530,15 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
               class="pointer-events-none absolute outline-2 outline-green-600 outline-dashed"
               :style="{ left: `${drop.x}px`, top: `${drop.y}px`, width: `${drop.w}px`, height: `${drop.h}px` }"
             />
-            <span :class="handle" title="Cambiar el tamaño del formulario" @pointerdown.stop="startDrag(form, $event, 'size')" />
+            <span :class="handle" :title="t('Cambiar el tamaño del formulario')" @pointerdown.stop="startDrag(form, $event, 'size')" />
           </div>
         </div>
       </div>
 
-      <ResizeHandle v-model="codeHeight" label="Código" vertical after />
+      <ResizeHandle v-model="codeHeight" :label="t('Código')" vertical after />
       <div v-show="codeHeight" class="flex min-h-0 shrink-0 flex-col" :style="{ height: `${codeHeight}px` }" data-area="code">
         <label class="flex items-center gap-2 px-2 py-1">
-          Código de {{ selected.props.Name }}
+          {{ t("Código de {0}", selected.props.Name) }}
           <select v-model="event" :class="field">
             <option v-for="m in methodNames(selected)" :key="m" :value="m">{{ m }}{{ selected.methods[m] ? " •" : "" }}</option>
           </select>
@@ -548,14 +547,14 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
       </div>
     </div>
 
-    <ResizeHandle v-model="propsWidth" label="Propiedades" after />
-    <aside v-show="propsWidth" class="flex min-h-0 shrink-0 flex-col" :style="{ width: `${propsWidth}px` }" aria-label="Propiedades">
+    <ResizeHandle v-model="propsWidth" :label="t('Propiedades')" after />
+    <aside v-show="propsWidth" class="flex min-h-0 shrink-0 flex-col" :style="{ width: `${propsWidth}px` }" :aria-label="t('Propiedades')">
       <div class="flex items-center gap-1 border-b border-neutral-300 p-2 dark:border-neutral-700">
         <!-- every object of the form, indented by depth: the way to reach pages and what a container hides -->
-        <select v-model="selected" class="flex-1" :class="field" aria-label="Objeto seleccionado">
+        <select v-model="selected" class="flex-1" :class="field" :aria-label="t('Objeto seleccionado')">
           <option v-for="(p, i) in tree" :key="i" :value="p.node">{{ "  ".repeat(p.depth) }}{{ p.node.props.Name }}</option>
         </select>
-        <button type="button" :class="tool" :disabled="selected === form" @click="remove">Eliminar</button>
+        <button type="button" :class="tool" :disabled="selected === form" @click="remove">{{ t("Eliminar") }}</button>
       </div>
       <div class="overflow-y-auto p-2">
         <label class="grid grid-cols-2 items-center gap-1 py-0.5">
@@ -566,7 +565,7 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
         <p v-if="nameError" class="text-red-600 dark:text-red-400" role="alert">{{ nameError }}</p>
         <!-- the same as dragging the control onto another container, for when dragging is not an option -->
         <label v-if="selected !== form && homes.length > 1" class="grid grid-cols-2 items-center gap-1 py-0.5">
-          Dentro de
+          {{ t("Dentro de") }}
           <select
             :class="field"
             :value="homes.findIndex((p) => p.node === parentOf(selected))"
