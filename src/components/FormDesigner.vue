@@ -27,7 +27,7 @@ import {
   Type,
   X,
 } from "@lucide/vue";
-import { classes, type DrawNode } from "../engine";
+import { assets, classes, type DrawNode } from "../engine";
 import FormControl, { colorCss, pageTop } from "./FormControl.vue";
 import ProgramEditor from "./ProgramEditor.vue";
 
@@ -501,6 +501,7 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
           Name
           <input :class="field" :value="selected.props.Name" @change="rename(selected, typed($event))" />
         </label>
+        <datalist id="fost-assets"><option v-for="a in assets" :key="a" :value="a" /></datalist>
         <p v-if="nameError" class="text-red-600 dark:text-red-400" role="alert">{{ nameError }}</p>
         <!-- the same as dragging the control onto another container, for when dragging is not an option -->
         <label v-if="selected !== form && homes.length > 1" class="grid grid-cols-2 items-center gap-1 py-0.5">
@@ -535,7 +536,14 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
             :value="num(selected, key)"
             @change="set(selected, key, Number(typed($event)))"
           />
-          <input v-else :class="field" :value="value(selected, key)" @change="set(selected, key, typed($event))" />
+          <!-- Picture offers the project's assets -->
+          <input
+            v-else
+            :class="field"
+            :list="key === 'Picture' ? 'fost-assets' : undefined"
+            :value="value(selected, key)"
+            @change="set(selected, key, typed($event))"
+          />
         </label>
       </div>
     </aside>

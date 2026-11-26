@@ -108,6 +108,12 @@ const openProject = () =>
     if (chosen) project.value = chosen;
   });
 
+/** Runs the project's main program from the disk, as DO does. Unsaved changes in the editor are not part of it. */
+function runProject(program: string) {
+  dir.value = project.value;
+  run(`DO ${stem(program)}`, `DO ${stem(program)}`);
+}
+
 /** Opens a file of the project from its panel; `line` is where a class is defined. */
 const openFromProject = (file: string, line?: number) =>
   attempt(async () => {
@@ -185,7 +191,7 @@ const button = "flex items-center gap-1.5 rounded px-2 py-1 hover:bg-neutral-200
     </header>
     <MenuBar />
     <div class="flex min-h-0 flex-1">
-    <ProjectPanel ref="panel" @open="openFromProject" />
+    <ProjectPanel ref="panel" @open="openFromProject" @run="runProject" />
     <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <ProgramEditor v-show="kind === 'program'" ref="editor" class="min-h-0 flex-1" @change="dirty = true" />
       <FormDesigner v-show="kind === 'form'" ref="designer" class="min-h-0 flex-1" @change="dirty = true" />

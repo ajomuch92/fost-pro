@@ -71,6 +71,8 @@ function remembered(key: string) {
     return null;
   }
 }
+/** The pictures and other files of the open project's `assets` folder, as a form names them. */
+export const assets = ref<string[]>([]);
 /** Folder of the open project: a project is a folder. Remembered between sessions. */
 export const project = ref<string | null>(remembered("fost-project"));
 watch(
