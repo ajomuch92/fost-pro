@@ -141,6 +141,21 @@ fn copy_file(from: String, to: String) -> Result<(), String> {
     copy().map(|_| ()).map_err(|e| format!("No se pudo copiar {from}: {e}"))
 }
 
+/// Renames a file of a project. One already called that is left alone.
+#[tauri::command]
+fn rename_file(from: String, to: String) -> Result<(), String> {
+    if std::path::Path::new(&to).exists() {
+        return Err(format!("Ya existe {to}"));
+    }
+    std::fs::rename(&from, &to).map_err(|e| format!("No se pudo renombrar {from}: {e}"))
+}
+
+/// Deletes a file of a project, which the user has confirmed.
+#[tauri::command]
+fn delete_file(path: String) -> Result<(), String> {
+    std::fs::remove_file(&path).map_err(|e| format!("No se pudo eliminar {path}: {e}"))
+}
+
 #[tauri::command]
 fn write_file(path: String, text: String) -> Result<(), String> {
     std::fs::write(&path, text).map_err(|e| format!("No se pudo guardar {path}: {e}"))
@@ -250,7 +265,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            run_code, run_form, ui_event, menu_event, stop_code, answer_prompt, class_info, reference, project_info, read_file, read_binary, write_file, copy_file
+            run_code, run_form, ui_event, menu_event, stop_code, answer_prompt, class_info, reference, project_info, read_file, read_binary, write_file, copy_file, rename_file, delete_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -270,6 +285,22 @@ mod tests {
         assert!(copy_file(path("a.png"), path("assets/a.png")).unwrap_err().starts_with("Ya existe"));
         assert_eq!(std::fs::read_to_string(path("assets/a.png")).unwrap(), "uno");
         assert!(copy_file(path("nadie.png"), path("assets/b.png")).unwrap_err().starts_with("No se pudo copiar"));
+    }
+
+    #[test]
+    fn rename_file_never_overwrites_and_delete_file_removes_one_file() {
+        let dir = tempfile_dir("rename");
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        std::fs::write(path("a.fost"), "a").unwrap();
+        std::fs::write(path("b.fost"), "b").unwrap();
+        assert!(rename_file(path("a.fost"), path("b.fost")).unwrap_err().starts_with("Ya existe"));
+        assert_eq!(rename_file(path("a.fost"), path("c.fost")), Ok(()));
+        assert_eq!(std::fs::read_to_string(path("c.fost")).unwrap(), "a");
+        assert_eq!(delete_file(path("c.fost")), Ok(()));
+        assert!(delete_file(path("c.fost")).unwrap_err().starts_with("No se pudo eliminar"));
+        // a folder is not a file to delete
+        assert!(delete_file(dir.to_string_lossy().into_owned()).is_err());
+        assert_eq!(std::fs::read_to_string(path("b.fost")).unwrap(), "b");
     }
 
     /// A folder of its own for a test, new on every run so nothing has to be cleaned up first.
