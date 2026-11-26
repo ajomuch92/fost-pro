@@ -66,7 +66,10 @@ el SQL.
   `_MSYSMENU` aparece sin activarlo, como el código que genera el diseñador de menús de FoxPro.
 - **Proyectos:** un proyecto es una carpeta. El botón Proyecto la abre (o la crea desde el diálogo) y un
   panel lateral lista sus programas, formularios, clases (`DEFINE CLASS`, con un clic va a su línea) y
-  tablas con sus campos. `DO`, `DO FORM` y las tablas trabajan en esa carpeta.
+  tablas con sus campos. `DO`, `DO FORM` y las tablas trabajan en esa carpeta. Al abrirla se crea su
+  archivo de proyecto, `nombre.fostproj`, que guarda el programa principal (se marca con la estrella y se
+  ejecuta con el botón del panel). La sección Recursos copia imágenes y otros archivos a `assets/`; un
+  `Image` los usa con `Picture = "assets/logo.png"`, y el diseñador los sugiere al escribir esa propiedad.
 - **IDE:** editor con resaltado, diseñador de formularios (arrastrar, redimensionar, propiedades, código
   por evento; los controles se arrastran dentro y fuera de contenedores y pestañas), ventana de comandos
   con historial, y
@@ -165,6 +168,8 @@ sin error y por qué fallan las demás. Hoy pasan 7 de 34.
 - **`.fost`**: un programa, en texto plano.
 - **`datos.fostdb`**: las tablas de una carpeta, en una base de datos SQLite. Se crea con el primer
   `CREATE TABLE`. Los cursores (`CREATE CURSOR`) viven en memoria y no dejan archivo.
+- **`.fostproj`**: el archivo de un proyecto, en JSON. Hoy guarda `main`, el programa principal.
+- **`assets/`**: los recursos del proyecto (imágenes y otros archivos).
 - **`.fostform`**: un formulario, en JSON. Cada objeto tiene `class`, `props`, `methods` (el código de cada
   evento) y `controls`. Solo se guardan las propiedades que difieren del valor por defecto de la clase.
 
