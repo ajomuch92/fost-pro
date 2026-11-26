@@ -2,9 +2,10 @@
 // The open project: the programs, forms, classes and tables of its folder.
 import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { Play, Plus, RefreshCw, Star, X } from "@lucide/vue";
-import { assets, pending, project, report } from "../engine";
+import { assets, type MenuItem, pending, project, report } from "../engine";
+import MenuItems from "./MenuItems.vue";
 
 type Field = { name: string; kind: string; width: number; decimals: number };
 type Info = {
@@ -19,7 +20,12 @@ type Info = {
 };
 
 /** A file of the project to open, and the line to go to when it matters; or the main program to run. */
-const emit = defineEmits<{ open: [file: string, line?: number]; run: [program: string] }>();
+const emit = defineEmits<{
+  open: [file: string, line?: number];
+  run: [program: string];
+  /** A file of the project changed its name, or is gone (`to` null). */
+  moved: [from: string, to: string | null];
+}>();
 const info = ref<Info | null>(null);
 
 const folderName = () => project.value!.replace(/^.*[\\/]/, "");
@@ -70,6 +76,72 @@ watch(pending, (waiting) => waiting || refresh());
 // saving a file may add it, or change its classes
 defineExpose({ refresh });
 
+// The context menu: where it is, and the file it was opened on, if any.
+const menu = ref<{ x: number; y: number; file: string | null } | null>(null);
+const menuItems = () => {
+  const item = (key: string, prompt: string): MenuItem => ({ key, prompt, disabled: false, popup: null, items: null });
+  const forFile = menu.value?.file ? [item("-", "\\-"), item("rename", "Renombrar..."), item("delete", "Eliminar")] : [];
+  return [item("program", "Nuevo programa..."), item("form", "Nuevo formulario..."), ...forFile];
+};
+function showMenu(e: MouseEvent, file: string | null = null) {
+  menu.value = { x: e.clientX, y: e.clientY, file };
+}
+
+// The name being asked for: of a new file, or the new one of `file`.
+const naming = ref<{ kind: "program" | "form" | "rename"; file: string | null; value: string } | null>(null);
+const extensions = { program: ".fost", form: ".fostform" };
+const taken = (name: string) =>
+  [...info.value!.programs, ...info.value!.forms, ...info.value!.assets].some((f) => f.toLowerCase() === name.toLowerCase());
+
+async function choose(action: string) {
+  const file = menu.value!.file;
+  menu.value = null;
+  if (action !== "delete") {
+    naming.value = { kind: action as "program" | "form" | "rename", file, value: action === "rename" ? file!.replace(/^.*\//, "") : "" };
+    return;
+  }
+  if (!(await confirm(`¿Eliminar ${file}? No se puede deshacer.`, { kind: "warning" }))) return;
+  try {
+    await invoke("delete_file", { path: `${project.value}/${file}` });
+    if (info.value!.main === file) await save(info.value!.file!, null);
+    emit("moved", file!, null);
+  } catch (e) {
+    report(String(e));
+  }
+  await refresh();
+}
+
+/** Creates the file, or renames it, with the name that was typed. */
+async function named() {
+  const { kind, file } = naming.value!;
+  let name = naming.value!.value.trim();
+  if (!name || /[\\/]/.test(name)) return;
+  naming.value = null;
+  try {
+    if (kind === "rename") {
+      // the kind of a file is its extension, so a new name keeps it
+      const extension = file!.match(/\.[^./]*$/)?.[0] ?? "";
+      if (!name.toLowerCase().endsWith(extension.toLowerCase())) name += extension;
+      const to = file!.replace(/[^/]*$/, name);
+      if (to === file) return;
+      await invoke("rename_file", { from: `${project.value}/${file}`, to: `${project.value}/${to}` });
+      if (info.value!.main === file) await save(info.value!.file!, to);
+      emit("moved", file!, to);
+    } else {
+      if (!name.toLowerCase().endsWith(extensions[kind])) name += extensions[kind];
+      if (taken(name)) throw `Ya existe ${name}`;
+      const stem = name.replace(/\.[^.]*$/, "").replace(/\W/g, "_");
+      const text = kind === "form" ? JSON.stringify({ props: { Name: stem } }, null, 2) + "\n" : "";
+      await invoke("write_file", { path: `${project.value}/${name}`, text });
+      emit("open", name);
+    }
+  } catch (e) {
+    report(String(e));
+  }
+  await refresh();
+}
+const vFocus = { mounted: (el: HTMLInputElement) => el.select() };
+
 /** A field as CREATE TABLE writes it: C(10), N(8, 2), L. */
 const type = (f: Field) => ("CN".includes(f.kind) ? `${f.kind}(${f.width}${f.decimals ? `, ${f.decimals}` : ""})` : f.kind);
 const item = "block w-full truncate rounded px-2 py-0.5 text-left hover:bg-neutral-200 dark:hover:bg-neutral-700";
@@ -81,7 +153,27 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
     v-if="project && info"
     class="flex w-56 shrink-0 flex-col border-r border-neutral-300 text-sm dark:border-neutral-700"
     aria-label="Proyecto"
+    @contextmenu.prevent="showMenu($event)"
+    @keydown.esc="(menu = null), (naming = null)"
   >
+    <!-- the menu of the right button: new files anywhere, and what can be done to the file under the pointer -->
+    <div v-if="menu" class="fixed inset-0 z-40" @pointerdown.self="menu = null" @contextmenu.prevent.stop="menu = null">
+      <div class="fixed" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }">
+        <MenuItems :items="menuItems()" popup="proyecto" @choose="(_, action) => choose(action)" />
+      </div>
+    </div>
+    <form v-if="naming" class="border-b border-neutral-300 p-2 dark:border-neutral-700" @submit.prevent="named">
+      <label class="block">
+        {{ naming.kind === "rename" ? `Nuevo nombre de ${naming.file}` : naming.kind === "form" ? "Nombre del formulario" : "Nombre del programa" }}
+        <input
+          v-model="naming.value"
+          v-focus
+          class="mt-1 w-full rounded border border-neutral-400 bg-transparent px-1"
+          spellcheck="false"
+          @blur="naming = null"
+        />
+      </label>
+    </form>
     <header class="flex items-center gap-1 border-b border-neutral-300 px-2 py-1 dark:border-neutral-700">
       <span class="flex-1 truncate font-semibold" :title="project">{{ folderName() }}</span>
       <button
@@ -105,7 +197,7 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
       <details open>
         <summary :class="title">Programas ({{ info.programs.length }})</summary>
         <div v-for="f in info.programs" :key="f" class="flex items-center">
-          <button type="button" :class="item" @click="emit('open', f)">{{ f }}</button>
+          <button type="button" :class="item" @click="emit('open', f)" @contextmenu.prevent.stop="showMenu($event, f)">{{ f }}</button>
           <button
             type="button"
             class="shrink-0 rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700"
@@ -121,7 +213,9 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
       </details>
       <details open>
         <summary :class="title">Formularios ({{ info.forms.length }})</summary>
-        <button v-for="f in info.forms" :key="f" type="button" :class="item" @click="emit('open', f)">{{ f }}</button>
+        <button v-for="f in info.forms" :key="f" type="button" :class="item" @click="emit('open', f)" @contextmenu.prevent.stop="showMenu($event, f)">
+          {{ f }}
+        </button>
       </details>
       <details open>
         <summary :class="title">Clases ({{ info.classes.length }})</summary>
@@ -149,7 +243,9 @@ const title = "cursor-pointer px-2 py-1 font-semibold select-none";
         <summary :class="title">Recursos ({{ info.assets.length }})</summary>
         <!-- not buttons: a resource is used by writing its path in a property, such as an Image's Picture -->
         <ul>
-          <li v-for="a in info.assets" :key="a" class="truncate px-2 py-0.5 select-text" :title="a">{{ a }}</li>
+          <li v-for="a in info.assets" :key="a" class="truncate px-2 py-0.5 select-text" :title="a" @contextmenu.prevent.stop="showMenu($event, a)">
+            {{ a }}
+          </li>
         </ul>
         <button type="button" :class="item" class="flex items-center gap-1 text-neutral-500" @click="addAssets">
           <Plus :size="14" aria-hidden="true" />Agregar...
