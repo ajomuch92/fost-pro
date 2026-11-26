@@ -84,6 +84,9 @@ SQL sobre una tabla.
   El diseñador de menús (botón Menú) escribe el código `DEFINE PAD`/`DEFINE BAR` en el programa. El botón
   derecho sobre el panel del proyecto ofrece lo propio de cada elemento: abrir, ejecutar, marcar como
   principal, renombrar o eliminar un archivo; ir a la definición de una clase; examinar una tabla.
+- **Idioma y tema:** la interfaz, los mensajes de error y la ayuda están en inglés y en español; empieza
+  en inglés y se cambia en el menú Ver, que también tiene el tema oscuro y muestra u oculta cada área.
+  Lo elegido se recuerda.
 - **Áreas ajustables:** el panel del proyecto, la ventana de comandos y, en el diseñador, los controles,
   las propiedades y el código cambian de tamaño arrastrando la barra que los separa. Un doble clic en la
   barra, o arrastrarla hasta el borde, cierra el área; otro doble clic la devuelve. Los tamaños se
