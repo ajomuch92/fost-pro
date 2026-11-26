@@ -113,7 +113,7 @@ fn visual(width: f64, height: f64, own: Props) -> Props {
 /// The built-in classes, in the order a designer's toolbox shows them.
 pub const BASES: &[&str] = &[
     "CUSTOM", "FORM", "LABEL", "TEXTBOX", "EDITBOX", "SPINNER", "COMMANDBUTTON", "CHECKBOX", "COMBOBOX", "LISTBOX",
-    "OPTIONGROUP", "OPTIONBUTTON", "COMMANDGROUP", "HYPERLINK", "IMAGE", "LINE", "SHAPE", "TIMER", "GRID", "CONTAINER",
+    "OPTIONGROUP", "OPTIONBUTTON", "COMMANDGROUP", "HYPERLINK", "IMAGE", "LINE", "SHAPE", "TIMER", "GRID", "COLUMN", "HEADER", "CONTAINER",
     "PAGEFRAME", "PAGE",
 ];
 
@@ -121,6 +121,7 @@ pub const BASES: &[&str] = &[
 pub fn member_of(key: &str) -> Option<(&'static str, &'static str)> {
     match key {
         "PAGEFRAME" => Some(("PAGE", "Page")),
+        "GRID" => Some(("COLUMN", "Column")),
         "OPTIONGROUP" => Some(("OPTIONBUTTON", "Option")),
         "COMMANDGROUP" => Some(("COMMANDBUTTON", "Command")),
         _ => None,
@@ -252,9 +253,13 @@ pub fn base(key: &str) -> Option<Base> {
         "GRID" => (
             "GRID",
             "Grid",
-            visual(320.0, 200.0, vec![("RecordSource", s("")), ("BackColor", Num(WHITE))]),
+            // ColumnCount -1 shows every field; a number makes that many Column objects, to choose what each shows
+            visual(320.0, 200.0, vec![("RecordSource", s("")), ("ColumnCount", Num(-1.0)), ("ReadOnly", Bool(false)), ("BackColor", Num(WHITE))]),
             &["Init", "AfterRowColChange", "Destroy"],
         ),
+        // ControlSource empty: the field in the column's own position. Its title is Header1.Caption
+        "COLUMN" => ("COLUMN", "Column", vec![("ControlSource", s("")), ("Width", Num(75.0))], &["Init", "Destroy"]),
+        "HEADER" => ("HEADER", "Header", vec![("Caption", s("Header1"))], &["Init", "Destroy"]),
         "CONTAINER" => ("CONTAINER", "Container", placed(100.0, 100.0, boxed(GRAY, SILVER)), CLICKED),
         // Caption, when not empty, is a title drawn above the tabs; each tab shows its Page's own Caption
         "PAGEFRAME" => ("PAGEFRAME", "PageFrame", placed(241.0, 169.0, vec![("ActivePage", Num(1.0)), ("Caption", s(""))]), &["Init", "Destroy"]),

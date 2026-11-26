@@ -155,7 +155,7 @@ fn errors_point_at_the_line() {
     assert_eq!(run("x = 1\n? y"), "!Línea 2: Variable no encontrada: Y");
     assert_eq!(run("IF .T.\n? 1"), "!Línea 1: IF sin cerrar");
     assert_eq!(run("? 1\nENDIF"), "!Línea 2: ENDIF sin su bloque de apertura");
-    assert_eq!(run("BROWSE"), "!Línea 1: Comando no reconocido: BROWSE");
+    assert_eq!(run("REINDEX"), "!Línea 1: Comando no reconocido: REINDEX");
     assert_eq!(run("SET DATE DMY"), "!Línea 1: SET DATE aún no está soportado");
     assert_eq!(run("? 'a'\n? nope(1)"), "a!Línea 2: Función no encontrada: NOPE");
 }
@@ -433,10 +433,10 @@ ENDDEFINE
         run(src),
         "2 Page2 Page1 dentro 1\n3 .T. Option2 2\n1 4 O\nPANEL Page1 PGF\n1 500 https://fost.example\nhttps://example.com"
     );
-    assert_eq!(run("f = CREATEOBJECT('Form')\nf.PageCount = 2").split('!').nth(1), Some("Línea 2: PageCount y ButtonCount necesitan un número, en un PageFrame o un grupo"));
+    assert_eq!(run("f = CREATEOBJECT('Form')\nf.PageCount = 2").split('!').nth(1), Some("Línea 2: PageCount, ButtonCount y ColumnCount necesitan un número, en un PageFrame, un grupo o un Grid"));
     // every built-in class can be created, and the designer is told about all of them
     let classes = fost_lang::class_info();
-    assert_eq!(classes.as_array().unwrap().len(), 22);
+    assert_eq!(classes.as_array().unwrap().len(), 24);
     for class in classes.as_array().unwrap() {
         assert_eq!(run(&format!("o = CREATEOBJECT('{}')\n? o.BaseClass", class["name"].as_str().unwrap())), class["name"].as_str().unwrap());
     }
@@ -658,7 +658,7 @@ fn tables_on_disk_persist_and_cursors_leave_no_file() {
     assert_eq!(it.take_output(), "\nCLI 2 Ana        10.56\n.T.");
     drop(it);
     std::fs::remove_dir_all(dir).unwrap();
-    assert_eq!(run_in_folder("sql", "SELECT * FROM x"), "!Línea 1: SELECT de SQL aún no está soportado");
+    assert_eq!(run_in_folder("sql", "SELECT * FROM x"), "!Línea 1: Tabla no encontrada: X");
 }
 
 #[test]
@@ -853,4 +853,203 @@ fn set_procedure_shares_routines_between_programs() {
     assert_eq!(run("DO falla").unwrap_err(), "textos.fost, línea 5: División entre cero");
     assert_eq!(run("SET PROCEDURE TO nadie").unwrap_err(), "Línea 1: Procedimiento o programa no encontrado: NADIE");
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn tables_filter_and_sql() {
+    let src = format!("{PEOPLE}
+SET FILTER TO edad < 40
+COUNT TO n
+GO TOP
+? n, TRIM(nombre)
+SKIP 5
+? EOF()
+SET FILTER TO
+COUNT TO n
+? n
+SELECT nombre, edad * 2 AS doble FROM gente WHERE edad > 25 ORDER BY nombre DESC INTO CURSOR mayores
+? ALIAS(), RECCOUNT(), _TALLY, TRIM(nombre), doble
+SKIP
+? TRIM(nombre), doble
+SELECT edad, COUNT(*), SUM(edad) AS total, MAX(nombre) FROM gente GROUP BY edad ORDER BY 1 INTO CURSOR grupos
+SCAN
+    ? edad, cnt, total, TRIM(max_nombre)
+ENDSCAN
+SELECT COUNT(*), AVG(edad) FROM gente WHERE edad > 100 INTO ARRAY a
+? a[1], ISNULL(a[2])
+SELECT DISTINCT edad FROM gente ORDER BY edad INTO ARRAY e
+? ALEN(e), e[1], e[3]
+SELECT TOP 1 * FROM gente g WHERE g.activo INTO CURSOR uno
+? TRIM(nombre), FCOUNT(), alta
+UPDATE gente SET edad = edad + 1, nota = 'x' WHERE nombre = 'Ana'
+? _TALLY
+DELETE FROM gente WHERE edad = 25
+SELECT gente
+GO 2
+? edad, nota, DELETED(), RECNO()
+GO 4
+? DELETED()
+");
+    assert_eq!(
+        run(&src),
+        "3 Carla\n.T.\n4\nMAYORES 2 2 Carla 60\nBeto 82\n25 2 50 Dora\n30 1 30 Carla\n41 1 41 Beto\n0 .T.\n3 25 41\nCarla 5 03/01/2024\n1\n26 x .F. 2\n.T."
+    );
+    assert_eq!(run(&format!("{PEOPLE}\nSELECT * FROM gente, otra")).split('!').nth(1), Some("Línea 9: SELECT admite una sola tabla, con WHERE, GROUP BY, ORDER BY e INTO"));
+    assert_eq!(run(&format!("{PEOPLE}\nSELECT nombre FROM gente ORDER BY edad INTO CURSOR c")).split('!').nth(1), Some("Línea 9: ORDER BY debe nombrar una columna del resultado"));
+}
+
+#[test]
+fn tables_buffering_and_kept_orders() {
+    let src = format!("{PEOPLE}
+= CURSORSETPROP('Buffering', 5)
+GO 1
+REPLACE edad WITH 99
+DELETE
+APPEND BLANK
+REPLACE nombre WITH 'Nuevo'
+? RECCOUNT(), TABLEREVERT(.T.)
+GO 1
+? RECCOUNT(), edad, DELETED()
+REPLACE edad WITH 31
+? TABLEUPDATE(.T.), TABLEREVERT(.T.), edad
+");
+    assert_eq!(run(&src), "5 2\n4 30 .F.\n.T. 0 31");
+
+    // an order of a table of the folder is still there after the program that made it is gone
+    let dir = std::env::temp_dir().join(format!("fost-orders-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run_here = |src: &str| {
+        let mut it = Interp::default();
+        it.dir = dir.clone();
+        let res = it.run(src);
+        res.map(|_| it.take_output()).map_err(|e| e.to_string())
+    };
+    run_here("CREATE TABLE t (nombre C(5), n I)\nINSERT INTO t VALUES ('b', 1)\nINSERT INTO t VALUES ('a', 2)\nINDEX ON UPPER(t.nombre) + 'x' TAG pornombre DESCENDING\nINDEX ON n TAG porn").unwrap();
+    assert_eq!(run_here("USE t ORDER pornombre\n? nombre\nSET ORDER TO porn\nGO TOP\n? nombre").unwrap(), "\nb    \nb    ");
+    assert_eq!(run_here("USE t\nSET ORDER TO nadie").unwrap_err(), "Línea 2: Orden no encontrado: NADIE");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn browse_lists_and_grid_columns() {
+    use serde_json::json;
+    let mut it = Interp::default();
+    it.run(PEOPLE).unwrap();
+    it.run("GO TOP\nBROWSE").unwrap();
+    let forms = it.forms_json();
+    assert_eq!(forms[0]["props"]["CAPTION"], "GENTE");
+    let grid = &forms[0]["children"][0];
+    assert_eq!(grid["grid"]["titles"], json!(["NOMBRE", "EDAD", "ACTIVO", "ALTA", "NOTA"]));
+    let id = grid["id"].as_u64().unwrap();
+
+    // a cell edited in the grid goes to that record's field, as typed text if need be
+    it.ui_event(id, &json!({ "RecNo": 2, "Field": "EDAD", "Value": "52" }), Some("AfterRowColChange")).unwrap();
+    it.run("? RECNO(), edad").unwrap();
+    assert_eq!(it.take_output(), "\n2 52");
+
+    // columns choose what is shown and under which title; a read-only grid ignores edits
+    it.run("f = CREATEOBJECT('Form')\nf.AddObject('g', 'Grid')\nf.g.ColumnCount = 2\nf.g.Column2.ControlSource = 'gente.edad'\nf.g.Column2.Header1.Caption = 'Años'\nf.g.Column1.Width = 40\nf.g.ReadOnly = .T.\nf.g.Visible = .T.\nf.Show()\n? f.g.ColumnCount").unwrap();
+    assert_eq!(it.take_output(), "\n2");
+    let forms = it.forms_json();
+    let g = &forms[1]["children"][0];
+    assert_eq!((&g["grid"]["titles"], &g["grid"]["fields"], &g["grid"]["widths"]), (&json!(["NOMBRE", "Años"]), &json!(["NOMBRE", "EDAD"]), &json!([40.0, 75.0])));
+    assert_eq!(g["grid"]["rows"][1]["cells"], json!(["Ana", 52.0]));
+    it.ui_event(g["id"].as_u64().unwrap(), &json!({ "RecNo": 1, "Field": "EDAD", "Value": 1 }), None).unwrap();
+    it.run("? RECNO(), edad").unwrap();
+    assert_eq!(it.take_output(), "\n1 30");
+
+    // a list filled from a table follows its filter
+    it.run("f.AddObject('c', 'ComboBox')\nf.c.RowSourceType = 6\nf.c.RowSource = 'gente.nombre'\nSET FILTER TO edad > 29\n? f.c.ListCount, f.c.List(2)\nf.c.RowSourceType = 2\nf.c.RowSource = 'gente'\n? f.c.List(1)").unwrap();
+    assert_eq!(it.take_output(), "\n3 Ana\nCarla");
+    assert_eq!(it.forms_json()[0]["children"][0]["grid"]["rows"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn try_catch_and_on_error() {
+    let src = "
+TRY
+    ? 'antes'
+    ? 1 / 0
+    ? 'no llega'
+CATCH TO e
+    ? e.Message, e.LineNo, MESSAGE(), ERROR()
+FINALLY
+    ? 'siempre'
+ENDTRY
+TRY
+    DO falla
+CATCH TO e
+    ? e.Message, e.UserValue, e.ErrorNo
+ENDTRY
+TRY
+    ? 'sin error'
+CATCH
+    ? 'no'
+ENDTRY
+? resultado()
+ON ERROR ? 'atendido:', MESSAGE(), LINENO()
+? nadie
+? 'sigue'
+TRY
+    ? nadie
+CATCH
+    ? 'el TRY gana'
+ENDTRY
+ON ERROR
+? nadie
+PROCEDURE falla
+    THROW 'propio'
+FUNCTION resultado
+    TRY
+        RETURN 'del try'
+    FINALLY
+        ? 'finally'
+    ENDTRY
+";
+    assert_eq!(
+        run(src),
+        "antes\nDivisión entre cero 4 División entre cero 1\nsiempre\npropio propio 2071\nsin error\nfinally\ndel try\natendido: Variable no encontrada: NADIE 23\nsigue\nel TRY gana!Línea 31: Variable no encontrada: NADIE"
+    );
+    assert_eq!(run("TRY\n? 1"), "!Línea 1: TRY sin cerrar");
+    assert_eq!(run("CATCH"), "!Línea 1: CATCH sin su bloque de apertura");
+}
+
+#[test]
+fn macros_text_and_transform() {
+    let src = "
+campo = 'edad'
+valor = '40 + 2'
+cmd = '? \"macro\",'
+&cmd &valor
+n&campo. = &valor
+? nedad
+orden = 'FOR i = 1 TO 2'
+TEXT TO t TEXTMERGE NOSHOW
+Hola <<UPPER('ana')>>,
+  tienes <<nedad>> años.
+ENDTEXT
+? t
+TEXT TO t ADDITIVE
+ Fin & sin macro
+ENDTEXT
+? t
+text = 5
+? text
+TEXT
+suelto
+ENDT
+? 'linea', 23
+? &nadie
+";
+    assert_eq!(
+        run(src),
+        "macro 42\n42\nHola ANA,\n  tienes 42 años.\nHola ANA,\n  tienes 42 años. Fin & sin macro\n5\nsuelto\nlinea 23!Línea 24: Variable no encontrada: NADIE"
+    );
+    assert_eq!(run("x = 5\n? &x"), "!Línea 2: La variable de la macro &X debe contener texto");
+    assert_eq!(run("TEXT\nabc"), "!Línea 1: TEXT sin cerrar");
+    assert_eq!(
+        run("? TRANSFORM(1234567.891, '999,999,999.99') + '|', TRANSFORM(-5, '999') + '|', TRANSFORM(12345, '999'), TRANSFORM(42, '@L 99999'), TRANSFORM(0, '@Z 999') + '|', TRANSFORM(9.5, '$999.99')"),
+        "  1,234,567.89|  -5| *** 00042    |   $9.50"
+    );
+    assert_eq!(run("? TRANSFORM('abc', '@!'), TRANSFORM('ab', '!X'), TRANSFORM('5551234', '@R 999-9999'), TRANSFORM(.T.), TRANSFORM(3)"), "ABC Ab 555-1234 .T. 3");
 }

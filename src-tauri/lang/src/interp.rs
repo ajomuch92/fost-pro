@@ -102,6 +102,16 @@ pub struct Interp {
     /// The open tables. None until a program first touches one.
     pub(crate) data: Option<Data>,
     pub(crate) menus: Menus,
+    /// ON ERROR: what runs when a statement fails outside a TRY.
+    on_error: Option<Rc<Vec<Stmt>>>,
+    /// The ON ERROR code is running: an error in it is not handled by itself.
+    handling: bool,
+    /// How many TRY blocks are open: inside one, errors go to its CATCH.
+    trying: usize,
+    /// The message and line of the last error a program handled, for MESSAGE() and LINENO().
+    last_error: Option<(String, usize)>,
+    /// What THROW threw, until the CATCH that takes it.
+    thrown: Option<Value>,
 }
 
 impl Default for Interp {
@@ -125,6 +135,11 @@ impl Default for Interp {
             host: Box::new(()),
             data: None,
             menus: Menus::default(),
+            on_error: None,
+            handling: false,
+            trying: 0,
+            last_error: None,
+            thrown: None,
         }
     }
 }
@@ -158,6 +173,7 @@ impl Interp {
     /// Runs one request from the host, leaving the interpreter ready for the next whatever happens.
     pub(crate) fn guarded(&mut self, f: impl FnOnce(&mut Self) -> R<()>) -> R<()> {
         self.stop.store(false, Ordering::Relaxed);
+        (self.handling, self.trying) = (false, 0);
         let res = f(self);
         self.frames.truncate(1);
         self.frames[0].with.clear();
@@ -238,12 +254,23 @@ impl Interp {
 
     pub(crate) fn block(&mut self, stmts: &[Stmt]) -> R<Flow> {
         for s in stmts {
-            let flow = self.exec(s).map_err(|mut e| {
-                if e.line == 0 {
-                    e.line = s.line;
+            let flow = match self.exec(s) {
+                Ok(flow) => flow,
+                Err(mut e) => {
+                    if e.line == 0 {
+                        e.line = s.line;
+                    }
+                    // ON ERROR takes it, and the program goes on with the next statement
+                    let handler = self.on_error.clone().filter(|_| !self.handling && self.trying == 0 && self.tick().is_ok());
+                    let Some(handler) = handler else { return Err(e) };
+                    self.last_error = Some((e.msg, e.line));
+                    self.handling = true;
+                    let handled = self.block(&handler);
+                    self.handling = false;
+                    handled?;
+                    Flow::Next
                 }
-                e
-            })?;
+            };
             if !matches!(flow, Flow::Next) {
                 return Ok(flow);
             }
@@ -451,12 +478,116 @@ impl Interp {
                 }
             }
             Kind::Help => self.help = true,
+            Kind::Try { body, var, catch, finally } => {
+                self.trying += 1;
+                let mut res = self.block(body);
+                self.trying -= 1;
+                // a program the user stopped is not an error to catch
+                if let (Err(e), Some(catch), true) = (&res, catch, self.tick().is_ok()) {
+                    self.last_error = Some((e.msg.clone(), e.line));
+                    let thrown = self.thrown.take();
+                    if let Some(var) = var {
+                        let exception = self.create("CUSTOM", None, "Exception")?;
+                        let text = |s: &str| Value::Str(s.to_string());
+                        let props = [
+                            ("MESSAGE", text(&e.msg)),
+                            ("LINENO", Value::Num(e.line as f64)),
+                            ("PROCEDURE", text(e.file.as_deref().unwrap_or(""))),
+                            // shortcut: errors have no FoxPro numbers; 2071 is the one of THROW, 1 any other
+                            ("ERRORNO", Value::Num(if thrown.is_some() { 2071.0 } else { 1.0 })),
+                            ("USERVALUE", thrown.unwrap_or(Value::Str(String::new()))),
+                        ];
+                        exception.0.borrow_mut().props.extend(props.map(|(k, v)| (k.to_string(), v)));
+                        self.set_var(var, Value::Object(exception));
+                    }
+                    res = self.block(catch);
+                }
+                // FINALLY runs whatever happened, and what it returns wins
+                let last = self.block(finally)?;
+                return if matches!(last, Flow::Next) { res } else { Ok(last) };
+            }
+            Kind::Throw(e) => {
+                let v = match e {
+                    Some(e) => self.eval(e)?,
+                    None => Value::Str("Error lanzado por el programa".into()),
+                };
+                let msg = v.display();
+                self.thrown = Some(v);
+                return Err(err(msg));
+            }
+            Kind::OnError(code) => self.on_error = Some(code.clone()).filter(|c| !c.is_empty()),
+            Kind::Text { var, additive, merge, show, text } => {
+                let mut text = text.clone();
+                if *merge {
+                    // <<expression>> is replaced by its value
+                    let mut out = String::new();
+                    let mut rest = text.as_str();
+                    while let Some((before, after)) = rest.split_once("<<") {
+                        let Some((inside, after)) = after.split_once(">>") else { break };
+                        out.push_str(before);
+                        out.push_str(&self.eval(&parse_expr(inside)?)?.display());
+                        rest = after;
+                    }
+                    text = out + rest;
+                }
+                match var {
+                    Some(var) => {
+                        let old = match self.lookup(var).filter(|_| *additive).map(|v| v.borrow().clone()) {
+                            Some(Value::Str(s)) => s,
+                            _ => String::new(),
+                        };
+                        self.set_var(var, Value::Str(old + &text));
+                    }
+                    None if *show => self.print(&text),
+                    None => {}
+                }
+            }
+            Kind::Macro(src) => {
+                let text = self.expand(src)?;
+                // the line of an error in it is the line of the statement itself
+                let unplaced = |mut e: Error| {
+                    e.line = 0;
+                    e
+                };
+                let prog = parse(&text).map_err(unplaced)?;
+                if !prog.routines.is_empty() || !prog.classes.is_empty() {
+                    return Err(err("Una macro no puede definir procedimientos ni clases"));
+                }
+                return self.block(&prog.main).map_err(unplaced);
+            }
             Kind::Data(cmd) => self.exec_data(cmd)?,
             Kind::Menu(cmd) => self.exec_menu(cmd)?,
             Kind::Scan { scope, body } => return self.scan(scope, body),
             Kind::Nop => {}
         }
         Ok(Flow::Next)
+    }
+
+    /// A statement with each `&name` replaced by the text that variable holds. A dot ends the name: `&campo.1`.
+    // shortcut: a macro is a whole statement of one line, so `IF &cond` cannot open a block, and
+    // `&name` inside a string is replaced too; upgrade when programs need either
+    fn expand(&self, src: &str) -> R<String> {
+        let c: Vec<char> = src.chars().collect();
+        let (mut out, mut i) = (String::new(), 0);
+        while i < c.len() {
+            let next = c.get(i + 1).copied().unwrap_or(' ');
+            if c[i] == '&' && next == '&' {
+                break;
+            }
+            if c[i] == '&' && (next.is_alphabetic() || next == '_') {
+                let end = (i + 1..c.len()).find(|&j| !(c[j].is_alphanumeric() || c[j] == '_')).unwrap_or(c.len());
+                let name: String = c[i + 1..end].iter().collect::<String>().to_uppercase();
+                let Value::Str(text) = self.get(&name)?.borrow().clone() else {
+                    return Err(err(format!("La variable de la macro &{name} debe contener texto")));
+                };
+                out.push_str(&text);
+                i = end + (c.get(end) == Some(&'.')) as usize;
+                continue;
+            }
+            out.push(c[i]);
+            i += 1;
+        }
+        Ok(out)
     }
 
     /// The file `name.ext` in `dir`, whatever its case: the lexer upper-cased the name.
@@ -519,7 +650,7 @@ impl Interp {
     }
 
     pub(crate) fn set_prop(&mut self, obj: &ObjRef, name: &str, v: Value) -> R<()> {
-        if matches!(name, "PAGECOUNT" | "BUTTONCOUNT") {
+        if matches!(name, "PAGECOUNT" | "BUTTONCOUNT" | "COLUMNCOUNT") {
             return self.set_count(obj, v);
         }
         match obj.0.borrow_mut().props.get_mut(name) {
@@ -682,6 +813,10 @@ impl Interp {
                 Value::Str(t.into())
             }
             "VARTYPE" => Value::Str(self.eval(arg(0)?).map_or('U', |v| v.type_char()).into()),
+            "MESSAGE" => Value::Str(self.last_error.as_ref().map_or(String::new(), |e| e.0.clone())),
+            "LINENO" => Value::Num(self.last_error.as_ref().map_or(0, |e| e.1) as f64),
+            // shortcut: errors have no FoxPro numbers, so this only says whether there was one
+            "ERROR" => Value::Num(self.last_error.is_some() as u8 as f64),
             "RAND" => {
                 // xorshift64: enough for RAND(), not for anything security related
                 self.rng ^= self.rng << 13;

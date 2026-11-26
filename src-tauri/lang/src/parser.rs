@@ -1,4 +1,4 @@
-use crate::lexer::{Line, Tok, lex};
+use crate::lexer::{Line, Tok, lex, source};
 use crate::value::Value;
 use crate::{Error, R, is_kw};
 use std::rc::Rc;
@@ -76,6 +76,15 @@ pub enum Kind {
     Help,
     Data(DataCmd),
     Menu(MenuCmd),
+    /// TRY ... CATCH [TO var] ... FINALLY ... ENDTRY. `catch` None is a TRY without CATCH.
+    Try { body: Vec<Stmt>, var: Option<String>, catch: Option<Vec<Stmt>>, finally: Vec<Stmt> },
+    Throw(Option<Expr>),
+    /// ON ERROR: what runs when a statement fails. Empty removes it.
+    OnError(Rc<Vec<Stmt>>),
+    /// TEXT ... ENDTEXT: the text goes to `var`, or is shown. `merge` evaluates `<<expression>>`.
+    Text { var: Option<String>, additive: bool, merge: bool, show: bool, text: String },
+    /// A statement with `&name` in it, parsed when it runs.
+    Macro(String),
     Scan { scope: RecScope, body: Vec<Stmt> },
     Nop,
 }
@@ -121,7 +130,14 @@ pub enum DataCmd {
     Skip(Option<Expr>),
     Locate(Rc<RecScope>),
     Continue,
-    Index { expr: Rc<Expr>, tag: String, descending: bool },
+    /// `text` is the expression as written, to keep the order with the table.
+    Index { expr: Rc<Expr>, text: String, tag: String, descending: bool },
+    /// SET FILTER TO: only the records that pass are seen. None removes it.
+    SetFilter(Option<Rc<Expr>>),
+    Browse,
+    SqlSelect(Rc<Select>),
+    SqlUpdate { table: String, pairs: Vec<(String, Expr)>, cond: Option<Expr> },
+    SqlDelete { table: String, cond: Option<Expr> },
     SetOrder(Option<String>),
     Seek(Expr),
     Count { scope: RecScope, var: Option<String> },
@@ -153,6 +169,38 @@ pub enum MenuCmd {
     Release { popups: bool, names: Vec<String> },
     /// SET SYSMENU TO: empties the system menu.
     ResetSys,
+}
+
+/// SELECT ... FROM one table.
+#[derive(Debug)]
+pub struct Select {
+    pub distinct: bool,
+    pub top: Option<Expr>,
+    /// Each column with the name AS gives it. Empty means `*`.
+    pub items: Vec<(Expr, Option<String>)>,
+    pub table: String,
+    pub alias: Option<String>,
+    pub cond: Option<Expr>,
+    pub group: Vec<Expr>,
+    /// ORDER BY: columns of the result, and whether each is DESC.
+    pub order: Vec<(Column, bool)>,
+    pub into: Dest,
+}
+
+/// A column of a query's result, by position from 1 or by name.
+#[derive(Debug)]
+pub enum Column {
+    Pos(usize),
+    Name(String),
+}
+
+/// Where a query's result goes. Screen is a cursor called QUERY, shown.
+#[derive(Debug)]
+pub enum Dest {
+    Screen,
+    Cursor(String),
+    Table(String),
+    Array(String),
 }
 
 #[derive(Debug)]
@@ -193,7 +241,7 @@ const SET_IGNORED: &[&str] = &[
 ];
 const BLOCK_ENDS: &[&str] = &[
     "ENDIF", "ELSE", "ENDDO", "ENDFOR", "NEXT", "ENDCASE", "CASE", "OTHERWISE", "ENDPROC", "ENDFUNC", "ENDWITH",
-    "ENDDEFINE", "ENDSCAN",
+    "ENDDEFINE", "ENDSCAN", "CATCH", "FINALLY", "ENDTRY", "ENDTEXT",
 ];
 const ROUTINE: &[&str] = &["PROCEDURE", "FUNCTION"];
 
@@ -532,9 +580,27 @@ impl Parser {
         } else if k("SELECT") {
             // one word after SELECT picks a work area; anything longer is SQL
             if self.toks().len() != 2 && !self.at_op("(") {
-                return self.fail("SELECT de SQL aún no está soportado");
+                DataCmd::SqlSelect(Rc::new(self.select()?))
+            } else {
+                DataCmd::Select(self.area()?)
             }
-            DataCmd::Select(self.area()?)
+        } else if k("UPDATE") {
+            let table = self.ident()?;
+            self.expect_kw("SET")?;
+            let pairs = self.list(|p| {
+                let mut field = p.ident()?;
+                if p.eat_op(".") {
+                    field = p.ident()?;
+                }
+                p.expect_op("=")?;
+                Ok((field, p.expr()?))
+            })?;
+            let cond = if self.eat_kw("WHERE") { Some(self.expr()?) } else { None };
+            DataCmd::SqlUpdate { table, pairs, cond }
+        } else if k("BROWSE") {
+            // FIELDS, NOEDIT, TITLE...: the whole table is shown as it is
+            self.i = self.toks().len();
+            DataCmd::Browse
         } else if k("CLOSE") {
             if !(self.eat_kw("DATABASES") || self.eat_kw("TABLES") || self.eat_kw("ALL")) {
                 return self.fail("Se esperaba CLOSE DATABASES, CLOSE TABLES o CLOSE ALL");
@@ -575,8 +641,10 @@ impl Parser {
             };
             DataCmd::Replace { pairs, scope }
         } else if k("DELETE") || k("RECALL") {
-            if self.at_kw("FROM") {
-                return self.fail("DELETE de SQL aún no está soportado");
+            if k("DELETE") && self.eat_kw("FROM") {
+                let table = self.ident()?;
+                let cond = if self.eat_kw("WHERE") { Some(self.expr()?) } else { None };
+                return Ok(Some(DataCmd::SqlDelete { table, cond }));
             }
             DataCmd::Delete { recall: k("RECALL"), scope: self.rec_scope()? }
         } else if word == "PACK" {
@@ -599,7 +667,9 @@ impl Parser {
             DataCmd::Continue
         } else if k("INDEX") {
             self.expect_kw("ON")?;
+            let from = self.i;
             let expr = Rc::new(self.expr()?);
+            let text = source(&self.toks()[from..self.i]);
             if !(self.eat_kw("TAG") || self.eat_kw("TO")) {
                 return self.fail("Se esperaba TAG nombre");
             }
@@ -615,7 +685,7 @@ impl Parser {
                     break;
                 }
             }
-            DataCmd::Index { expr, tag, descending }
+            DataCmd::Index { expr, text, tag, descending }
         } else if word == "SEEK" {
             DataCmd::Seek(self.expr()?)
         } else if k("COUNT") {
@@ -651,6 +721,76 @@ impl Parser {
         } else {
             return Ok(None);
         }))
+    }
+
+    /// A query, after the word SELECT.
+    fn select(&mut self) -> R<Select> {
+        let distinct = self.eat_kw("DISTINCT");
+        let top = if self.eat_kw("TOP") { Some(self.unary()?) } else { None };
+        let items = if self.eat_op("*") {
+            Vec::new()
+        } else {
+            self.list(|p| {
+                // COUNT(*) is not an expression anywhere else
+                let star = [Tok::Op("("), Tok::Op("*"), Tok::Op(")")];
+                let e = if p.at_kw("COUNT") && p.toks()[p.i + 1..].starts_with(&star) {
+                    p.i += 4;
+                    Expr::Call("COUNT".into(), Vec::new())
+                } else {
+                    p.expr()?
+                };
+                Ok((e, if p.eat_kw("AS") { Some(p.ident()?) } else { None }))
+            })?
+        };
+        self.expect_kw("FROM")?;
+        let table = self.ident()?;
+        self.eat_kw("AS");
+        let clause = |p: &Self| ["WHERE", "GROUP", "ORDER", "INTO", "HAVING", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "NOCONSOLE"].iter().any(|c| p.at_kw(c));
+        let alias = if matches!(self.peek(), Some(Tok::Ident(_))) && !clause(self) { Some(self.ident()?) } else { None };
+        let mut q = Select { distinct, top, items, table, alias, cond: None, group: Vec::new(), order: Vec::new(), into: Dest::Screen };
+        while self.peek().is_some() {
+            if self.eat_kw("WHERE") {
+                q.cond = Some(self.expr()?);
+            } else if self.eat_kw("GROUP") {
+                self.expect_kw("BY")?;
+                q.group = self.list(Self::expr)?;
+            } else if self.eat_kw("ORDER") {
+                self.expect_kw("BY")?;
+                q.order = self.list(|p| {
+                    let column = match p.peek().cloned() {
+                        Some(Tok::Num(n)) => {
+                            p.i += 1;
+                            Column::Pos(n as usize)
+                        }
+                        _ => {
+                            let mut name = p.ident()?;
+                            if p.eat_op(".") {
+                                name = p.ident()?;
+                            }
+                            Column::Name(name)
+                        }
+                    };
+                    let descending = p.eat_kw("DESCENDING");
+                    p.eat_kw("ASCENDING");
+                    Ok((column, descending))
+                })?;
+            } else if self.eat_kw("INTO") {
+                q.into = if self.eat_kw("CURSOR") {
+                    Dest::Cursor(self.ident()?)
+                } else if self.eat_kw("ARRAY") {
+                    Dest::Array(self.ident()?)
+                } else if self.eat_kw("TABLE") || self.eat_kw("DBF") {
+                    Dest::Table(self.ident()?)
+                } else {
+                    return self.fail("Se esperaba INTO CURSOR, INTO ARRAY o INTO TABLE");
+                };
+                while self.eat_kw("READWRITE") || self.eat_kw("NOFILTER") {}
+            } else if !self.eat_kw("NOCONSOLE") {
+                // shortcut: one table per query; upgrade to joins, HAVING and subqueries when programs need them
+                return self.fail("SELECT admite una sola tabla, con WHERE, GROUP BY, ORDER BY e INTO");
+            }
+        }
+        Ok(q)
     }
 
     /// `name OF menu` or `number OF popup`, after the word PAD or BAR.
@@ -785,6 +925,10 @@ impl Parser {
                 return Ok(Kind::Expr(e));
             }
             Some(Tok::Op("WITH.") | Tok::MemVar(_)) => return self.place_stmt(),
+            Some(Tok::Macro(text)) => {
+                self.skip_line();
+                return Ok(Kind::Macro(text));
+            }
             Some(Tok::Ident(w)) => w,
             _ => return self.fail("Sentencia no válida. Para ver el valor de una expresión, escribe ? delante"),
         };
@@ -877,6 +1021,56 @@ impl Parser {
             let body = self.block(&["ENDWITH"], Some(("WITH", line)))?;
             self.skip_line();
             Kind::With { object, body }
+        } else if word == "TRY" {
+            self.eol()?;
+            let opener = Some(("TRY", line));
+            let body = self.block(&["CATCH", "FINALLY", "ENDTRY"], opener)?;
+            let (mut var, mut catch) = (None, None);
+            if self.starts("CATCH") {
+                self.i = 1;
+                if self.eat_kw("TO") {
+                    var = Some(self.ident()?);
+                }
+                // shortcut: CATCH WHEN is not read; upgrade when programs filter errors that way
+                self.eol()?;
+                catch = Some(self.block(&["FINALLY", "ENDTRY"], opener)?);
+            }
+            let finally = if self.starts("FINALLY") {
+                self.skip_line();
+                self.block(&["ENDTRY"], opener)?
+            } else {
+                Vec::new()
+            };
+            self.skip_line();
+            Kind::Try { body, var, catch, finally }
+        } else if k("THROW") {
+            let e = if self.peek().is_some() { Some(self.expr()?) } else { None };
+            self.eol()?;
+            Kind::Throw(e)
+        } else if word == "ON" && self.eat_kw("ERROR") {
+            Kind::OnError(self.rest_as_code()?)
+        } else if word == "TEXT" {
+            let (mut var, mut additive, mut merge, mut show) = (None, false, false, true);
+            let text = loop {
+                if self.eat_kw("TO") {
+                    var = Some(self.ident()?);
+                } else if self.eat_kw("ADDITIVE") {
+                    additive = true;
+                } else if self.eat_kw("TEXTMERGE") {
+                    merge = true;
+                } else if self.eat_kw("NOSHOW") {
+                    show = false;
+                } else if self.eat_kw("PRETEXT") || self.eat_kw("FLAGS") {
+                    self.unary()?;
+                } else if let (Some(Tok::Str(text)), true) = (self.peek().cloned(), self.i + 1 == self.toks().len()) {
+                    self.i += 1;
+                    break text;
+                } else {
+                    return self.fail("Cláusula de TEXT no válida");
+                }
+            };
+            self.eol()?;
+            Kind::Text { var, additive, merge, show, text }
         } else if word == "SCAN" {
             let scope = self.rec_scope()?;
             self.eol()?;
@@ -1001,6 +1195,12 @@ impl Parser {
                 let n = if self.peek().is_some() { self.expr()? } else { Expr::Lit(Value::Num(10.0)) };
                 self.eol()?;
                 return Ok(Kind::Set("DECIMALS", n));
+            }
+            if is_kw(&option, "FILTER") {
+                self.expect_kw("TO")?;
+                let cond = if self.peek().is_some() { Some(Rc::new(self.expr()?)) } else { None };
+                self.eol()?;
+                return Ok(Kind::Data(DataCmd::SetFilter(cond)));
             }
             if is_kw(&option, "PROCEDURE") {
                 self.expect_kw("TO")?;

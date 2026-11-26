@@ -1,5 +1,5 @@
 use crate::value::parse_date;
-use crate::{Error, R};
+use crate::{Error, R, is_kw};
 use chrono::NaiveDate;
 use std::collections::HashMap;
 
@@ -15,6 +15,43 @@ pub enum Tok {
     /// A name written with the `m.` prefix: a variable, never a table field.
     MemVar(String),
     Op(&'static str),
+    /// A whole statement that has `&name` in it, as written: it is read again when it runs,
+    /// once the variable's text is known.
+    Macro(String),
+}
+
+impl Tok {
+    /// The token as source text that lexes back to it.
+    fn text(&self) -> String {
+        match self {
+            Tok::Num(n) => n.to_string(),
+            Tok::Str(s) => match ['"', '\''].into_iter().find(|q| !s.contains(*q)) {
+                Some(q) => format!("{q}{s}{q}"),
+                None => format!("[{s}]"),
+            },
+            Tok::Bool(b) => if *b { ".T." } else { ".F." }.into(),
+            Tok::Null => ".NULL.".into(),
+            Tok::Date(d) => d.map_or("{}".into(), |d| d.format("{^%Y-%m-%d}").to_string()),
+            Tok::Ident(w) => w.clone(),
+            Tok::MemVar(w) => format!("m.{w}"),
+            Tok::Op(op) => op.trim_start_matches("WITH").into(),
+            Tok::Macro(text) => text.clone(),
+        }
+    }
+}
+
+/// Tokens as source text, for an expression that has to be kept on disk.
+pub fn source(toks: &[Tok]) -> String {
+    let mut out = String::new();
+    for (i, t) in toks.iter().enumerate() {
+        // a member dot stays glued to its neighbours: with spaces it would read as something else
+        let dot = |t: &Tok| *t == Tok::Op(".");
+        if i > 0 && !dot(t) && !dot(&toks[i - 1]) {
+            out.push(' ');
+        }
+        out.push_str(&t.text());
+    }
+    out
 }
 
 /// One statement: a physical line plus any `;` continuations.
@@ -41,17 +78,45 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
     let mut lines = Vec::new();
     let mut toks: Vec<Tok> = Vec::new();
     let (mut i, mut no, mut start) = (0, 1, 1);
+    // where the statement being read begins in `c`
+    let mut from = 0;
+    // a statement with a macro in it is kept as its text
+    let whole = |toks: Vec<Tok>, from: usize, to: usize| {
+        if toks.iter().any(|t| matches!(t, Tok::Macro(_))) { vec![Tok::Macro(c[from..to].iter().collect())] } else { toks }
+    };
 
     while i < c.len() {
         let ch = c[i];
         if toks.is_empty() {
             start = no;
+            from = i;
         }
         let fail = |msg: &str| Err(Error::at(no, msg));
         match ch {
             '\n' => {
-                if !toks.is_empty() {
-                    lines.push(Line { no: start, toks: std::mem::take(&mut toks) });
+                let mut done = whole(std::mem::take(&mut toks), from, i);
+                // TEXT ... ENDTEXT: the lines in between are text, not code
+                if matches!(done.as_slice(), [Tok::Ident(w), rest @ ..] if w == "TEXT" && !matches!(rest.first(), Some(Tok::Op(_)))) {
+                    let (body, mut j) = (i + 1, i + 1);
+                    loop {
+                        if j >= c.len() {
+                            return Err(Error::at(start, "TEXT sin cerrar"));
+                        }
+                        let end = eol(j);
+                        no += 1;
+                        let line: String = c[j..end].iter().collect();
+                        if line.split_whitespace().next().is_some_and(|w| is_kw(&w.to_uppercase(), "ENDTEXT")) {
+                            done.push(Tok::Str(c[body..j.max(body + 1) - 1].iter().collect()));
+                            i = end;
+                            break;
+                        }
+                        j = end + 1;
+                    }
+                    lines.push(Line { no: start, toks: done });
+                    continue;
+                }
+                if !done.is_empty() {
+                    lines.push(Line { no: start, toks: done });
                 }
                 no += 1;
                 i += 1;
@@ -174,6 +239,10 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
                 let name = c[from..i].iter().collect::<String>().to_uppercase();
                 toks.push(if memvar { Tok::MemVar(name) } else { Tok::Ident(name) });
             }
+            '&' if at(i + 1).is_alphabetic() || at(i + 1) == '_' => {
+                toks.push(Tok::Macro(String::new()));
+                i += 1;
+            }
             _ => {
                 let op = OPS.iter().find(|op| op.chars().enumerate().all(|(k, x)| at(i + k) == x));
                 let Some(op) = op else { return fail(&format!("Carácter no válido: '{ch}'")) };
@@ -183,7 +252,7 @@ pub fn lex(src: &str) -> R<Vec<Line>> {
         }
     }
     if !toks.is_empty() {
-        lines.push(Line { no: start, toks });
+        lines.push(Line { no: start, toks: whole(toks, from, c.len()) });
     }
 
     // `#DEFINE NAME tokens` replaces NAME, token by token, on the lines that follow

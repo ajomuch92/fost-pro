@@ -5,7 +5,7 @@
 //! sit the things SQLite does not have: work areas, a record pointer, and orders by an expression.
 
 use crate::interp::{Flow, Interp};
-use crate::parser::{DataCmd, Expr, FieldDef, RecScope, Stmt};
+use crate::parser::{DataCmd, Expr, FieldDef, RecScope, Stmt, parse_expr};
 use crate::object::{ObjRef, to_json};
 use crate::value::{Value, compare, parse_date};
 use crate::{R, err};
@@ -22,13 +22,16 @@ const FILE: &str = "datos.fostdb";
 /// Where each table's fields are described: SQLite's own column types are not enough to rebuild them.
 const META: &str = "_fost_fields (tbl TEXT, pos INTEGER, name TEXT, kind TEXT, width INTEGER, decimals INTEGER)";
 
+mod sql;
+
+/// The orders of each table of the folder: the expression is kept as text and read again when the table is opened.
+const TAGS: &str = "_fost_tags (tbl TEXT, name TEXT, expr TEXT, descending INTEGER)";
+
 fn sql<T>(res: rusqlite::Result<T>) -> R<T> {
     res.map_err(|e| err(format!("Error de la base de datos: {e}")))
 }
 
 /// An order of a table: its records sorted by an expression.
-// shortcut: orders last while the interpreter runs, not across restarts; INDEX ON must run again.
-// Upgrade by saving the expression's text next to the table.
 struct Tag {
     name: String,
     expr: Rc<Expr>,
@@ -56,6 +59,13 @@ struct Area {
     keys: Option<Rc<Vec<(Value, i64)>>>,
     /// The search of the last LOCATE, for CONTINUE.
     locate: Option<Rc<RecScope>>,
+    /// SET FILTER TO: only the records that pass are in `keys`.
+    filter: Option<Rc<Expr>>,
+    /// With buffering on: each record changed since the last TABLEUPDATE(), as it was before
+    /// (None for one that did not exist), so TABLEREVERT() can put it back.
+    // shortcut: changes are written at once and only undone on request, so other areas see them early;
+    // upgrade to holding them back when programs rely on nobody seeing an edit before TABLEUPDATE()
+    buffer: Option<HashMap<i64, Option<Vec<Sql>>>>,
 }
 
 impl Area {
@@ -168,7 +178,10 @@ impl Interp {
         }
         sql(d.conn.execute("ATTACH DATABASE ?1 AS disk", [path.to_string_lossy()]))?;
         // WAL: a loop of single-record changes does not wait on the disk after each one
-        let setup = format!("PRAGMA disk.journal_mode = WAL; PRAGMA disk.synchronous = NORMAL; CREATE TABLE IF NOT EXISTS disk.{META}");
+        let setup = format!(
+            "PRAGMA disk.journal_mode = WAL; PRAGMA disk.synchronous = NORMAL;
+             CREATE TABLE IF NOT EXISTS disk.{META}; CREATE TABLE IF NOT EXISTS disk.{TAGS}"
+        );
         sql(d.conn.execute_batch(&setup))?;
         d.disk = Some(path);
         Ok(true)
@@ -256,7 +269,12 @@ impl Interp {
             row: None,
             keys: None,
             locate: None,
+            filter: None,
+            buffer: None,
         };
+        if schema == "disk" {
+            self.load_tags(table)?;
+        }
         if let Some(tag) = order {
             if !self.db()?.tags.get(&area.tag_key()).is_some_and(|tags| tags.iter().any(|t| t.name == tag)) {
                 return Err(err(format!("Orden no encontrado: {tag}")));
@@ -303,33 +321,40 @@ impl Interp {
         let query = format!("SELECT _recno FROM {}{visible} ORDER BY _recno", a.sql_name());
         let tag = a.order.as_ref().and_then(|o| d.tags.get(&a.tag_key())?.iter().find(|t| t.name == *o));
         let tag = tag.map(|t| (t.expr.clone(), t.descending));
+        let filter = a.filter.clone();
         let ids: Vec<i64> = {
             let mut stmt = sql(d.conn.prepare(&query))?;
             sql(sql(stmt.query_map([], |r| r.get(0)))?.collect())?
         };
         let mut keys: Vec<(Value, i64)> = Vec::with_capacity(ids.len());
-        match tag {
-            None => keys.extend(ids.into_iter().map(|id| (Value::Null, id))),
-            Some((expr, descending)) => {
-                // the key expression is evaluated with each record current, in this area
-                let d = self.data.as_mut().unwrap();
-                let saved = (d.current, d.areas[&n].pos, d.areas[&n].bof);
-                d.current = n;
-                let mut filled = Ok(());
-                for id in ids {
-                    self.place(n, Some(id));
-                    match self.eval(&expr) {
-                        Ok(key) => keys.push((key, id)),
-                        Err(e) => {
-                            filled = Err(e);
-                            break;
-                        }
+        if tag.is_none() && filter.is_none() {
+            keys.extend(ids.into_iter().map(|id| (Value::Null, id)));
+        } else {
+            // the filter and the key expression are evaluated with each record current, in this area
+            let d = self.data.as_mut().unwrap();
+            let saved = (d.current, d.areas[&n].pos, d.areas[&n].bof);
+            d.current = n;
+            let mut filled = Ok(());
+            for id in ids {
+                self.place(n, Some(id));
+                let key = match filter.as_ref().map(|f| self.truthy(f)).transpose() {
+                    Ok(Some(false)) => continue,
+                    Ok(_) => tag.as_ref().map_or(Ok(Value::Null), |(expr, _)| self.eval(expr)),
+                    Err(e) => Err(e),
+                };
+                match key {
+                    Ok(key) => keys.push((key, id)),
+                    Err(e) => {
+                        filled = Err(e);
+                        break;
                     }
                 }
-                self.place(n, saved.1);
-                self.area(n).bof = saved.2;
-                self.data.as_mut().unwrap().current = saved.0;
-                filled?;
+            }
+            self.place(n, saved.1);
+            self.area(n).bof = saved.2;
+            self.data.as_mut().unwrap().current = saved.0;
+            filled?;
+            if let Some((_, descending)) = tag {
                 // stable: records with equal keys stay in record-number order
                 keys.sort_by(|a, b| compare(&a.0, &b.0).unwrap_or(Ordering::Equal));
                 if descending {
@@ -340,6 +365,119 @@ impl Interp {
         let keys = Rc::new(keys);
         self.area(n).keys = Some(keys.clone());
         Ok(keys)
+    }
+
+    /// Reads the orders kept with a table of the folder, the first time it is opened.
+    fn load_tags(&mut self, table: &str) -> R<()> {
+        let key = format!("disk.{table}");
+        let d = self.db()?;
+        if d.tags.contains_key(&key) {
+            return Ok(());
+        }
+        let saved: Vec<(String, String, bool)> = {
+            let mut stmt = sql(d.conn.prepare("SELECT name, expr, descending FROM disk._fost_tags WHERE tbl = ?1"))?;
+            sql(sql(stmt.query_map([table], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))))?.collect())?
+        };
+        // an expression that no longer parses is an order that is gone
+        let tag = |(name, text, descending): (String, String, bool)| Some(Tag { name, expr: Rc::new(parse_expr(&text).ok()?), descending });
+        d.tags.insert(key, saved.into_iter().filter_map(tag).collect());
+        Ok(())
+    }
+
+    /// With buffering on, keeps the record as it is now, before its first change.
+    fn remember(&mut self, n: usize, id: i64) -> R<()> {
+        let a = self.area(n);
+        if !a.buffer.as_ref().is_some_and(|log| !log.contains_key(&id)) {
+            return Ok(());
+        }
+        let query = format!("SELECT * FROM {} WHERE _recno = ?1", a.sql_name());
+        let conn = &self.data.as_ref().unwrap().conn;
+        let row: Vec<Sql> = sql(conn.query_row(&query, [id], |r| (0..r.as_ref().column_count()).map(|i| r.get(i)).collect()))?;
+        self.area(n).buffer.as_mut().unwrap().insert(id, Some(row));
+        Ok(())
+    }
+
+    /// TABLEREVERT(): undoes what was changed since buffering started or the last TABLEUPDATE(). Returns how many records.
+    fn revert(&mut self, n: usize) -> R<usize> {
+        let Some(log) = self.area(n).buffer.as_mut().map(std::mem::take) else { return Ok(0) };
+        let name = self.area(n).sql_name();
+        let conn = &self.data.as_ref().unwrap().conn;
+        for (id, before) in &log {
+            match before {
+                None => sql(conn.execute(&format!("DELETE FROM {name} WHERE _recno = ?1"), [id]))?,
+                Some(row) => {
+                    let marks = vec!["?"; row.len()].join(", ");
+                    sql(conn.execute(&format!("INSERT OR REPLACE INTO {name} VALUES ({marks})"), rusqlite::params_from_iter(row)))?
+                }
+            };
+        }
+        self.touch(n);
+        // the current record may be one that no longer exists
+        if self.area(n).pos.is_some_and(|id| log.get(&id) == Some(&None)) {
+            self.go(n, 0)?;
+        }
+        Ok(log.len())
+    }
+
+    /// Sets or clears the deletion mark of the current record of an area.
+    fn mark(&mut self, n: usize, deleted: bool) -> R<()> {
+        let Some(id) = self.area(n).pos else { return Ok(()) };
+        self.remember(n, id)?;
+        let query = format!("UPDATE {} SET _deleted = ?1 WHERE _recno = ?2", self.area(n).sql_name());
+        sql(self.data.as_ref().unwrap().conn.execute(&query, rusqlite::params![deleted as i64, id]))?;
+        self.touch(n);
+        Ok(())
+    }
+
+    /// TABLEUPDATE(), TABLEREVERT() and CURSORSETPROP("Buffering", n).
+    fn buffer_function(&mut self, name: &str, args: &[Expr]) -> R<Value> {
+        let vals = args.iter().map(|a| self.eval(a)).collect::<R<Vec<Value>>>()?;
+        // the area, a number or an alias, is the last argument each of them takes
+        let n = match vals.get(if name == "TABLEREVERT" { 1 } else { 2 }) {
+            Some(v) => self.area_number(v)?,
+            None => self.current_area()?,
+        };
+        if !self.db()?.areas.contains_key(&n) {
+            return Err(err("No hay ninguna tabla abierta en esa área de trabajo"));
+        }
+        Ok(match name {
+            "TABLEREVERT" => Value::Num(self.revert(n)? as f64),
+            "TABLEUPDATE" => {
+                if let Some(log) = self.area(n).buffer.as_mut() {
+                    log.clear();
+                }
+                Value::Bool(true)
+            }
+            _ => {
+                // 1 is no buffering; FoxPro's row and table modes (2 to 5) all buffer the whole table here
+                if let [Value::Str(prop), Value::Num(mode), ..] = vals.as_slice() {
+                    if prop.eq_ignore_ascii_case("BUFFERING") {
+                        let a = self.area(n);
+                        a.buffer = if *mode > 1.0 { Some(a.buffer.take().unwrap_or_default()) } else { None };
+                    }
+                }
+                Value::Bool(true)
+            }
+        })
+    }
+
+    /// One field of every record an area shows, in its order, as text: what a list filled from a table holds.
+    /// `source` names the field as a ControlSource does. Empty when it names none.
+    pub(crate) fn column(&mut self, source: &str) -> R<Vec<String>> {
+        let Some((n, field)) = self.source_field(source) else { return Ok(Vec::new()) };
+        let keys = self.keys(n)?;
+        let d = self.data.as_ref().unwrap();
+        let query = format!("SELECT _recno, \"{}\" FROM {}", field.name, d.areas[&n].sql_name());
+        let mut stmt = sql(d.conn.prepare(&query))?;
+        let values: HashMap<i64, Value> = sql(sql(stmt.query_map([], |r| Ok((r.get(0)?, from_sql(&field, r.get(1)?)))))?.collect())?;
+        Ok(keys.iter().filter_map(|k| values.get(&k.1)).map(|v| v.display().trim_end().to_string()).collect())
+    }
+
+    /// The first field of the table open as `alias`, named as a ControlSource names it.
+    pub(crate) fn first_field(&self, alias: &str) -> Option<String> {
+        let n = self.alias_area(alias)?;
+        let a = &self.data.as_ref()?.areas[&n];
+        Some(format!("{}.{}", a.alias, a.fields.first()?.name))
     }
 
     /// Moves the record pointer `step` records from the top (GO TOP is `go(n, 0)`).
@@ -483,20 +621,48 @@ impl Interp {
         self.replace(n, &field.name, v)
     }
 
-    /// What a Grid shows of the table open as `alias`: its fields, its records in the current order, and which is current.
+    /// The columns of a Grid: the field each shows, its title and its width (None: as wide as it needs).
+    /// With no Column objects, every field of the table.
+    fn grid_columns(&mut self, grid: &ObjRef, fields: &[FieldDef]) -> Vec<(FieldDef, String, Option<Value>)> {
+        let columns: Vec<ObjRef> = grid.0.borrow().kids().into_iter().filter(|k| k.0.borrow().base == "COLUMN").collect();
+        if columns.is_empty() {
+            return fields.iter().map(|f| (f.clone(), f.name.clone(), None)).collect();
+        }
+        let mut out = Vec::new();
+        for (i, column) in columns.iter().enumerate() {
+            let c = column.0.borrow();
+            let text = |v: Option<&Value>| v.map_or(String::new(), |v| v.display());
+            // `alias.field` or `field`; empty takes the field in the column's own position
+            let source = text(c.props.get("CONTROLSOURCE")).trim().to_uppercase();
+            let name = source.rsplit('.').next().unwrap_or_default();
+            let field = if name.is_empty() { fields.get(i) } else { fields.iter().find(|f| f.name == name) };
+            let Some(field) = field else { continue };
+            let title = match c.props.get("HEADER1") {
+                Some(Value::Object(h)) => Some(text(h.0.borrow().props.get("CAPTION"))).filter(|t| t != "Header1"),
+                _ => None,
+            };
+            out.push((field.clone(), title.unwrap_or_else(|| field.name.clone()), c.props.get("WIDTH").cloned()));
+        }
+        out
+    }
+
+    /// What a Grid shows of its RecordSource: its columns, its records in the current order, and which is current.
     // shortcut: the first 1000 records are sent whole on every change; upgrade to sending the visible window when tables grow
-    pub(crate) fn grid_json(&mut self, alias: &str) -> Json {
-        let empty = json!({ "fields": [], "rows": [], "recno": null });
-        let Some(n) = self.alias_area(alias) else { return empty };
+    pub(crate) fn grid_json(&mut self, grid: &ObjRef) -> Json {
+        let empty = json!({ "fields": [], "titles": [], "widths": [], "rows": [], "recno": null });
+        let alias = grid.0.borrow().props.get("RECORDSOURCE").map_or(String::new(), |v| v.display());
+        let Some(n) = self.alias_area(&alias) else { return empty };
         let Ok(keys) = self.keys(n) else { return empty };
+        let fields = self.area(n).fields.clone();
+        let columns = self.grid_columns(grid, &fields);
         let d = self.data.as_ref().unwrap();
         let a = &d.areas[&n];
-        let columns: Vec<String> = a.fields.iter().map(|f| format!("\"{}\"", f.name)).collect();
-        let query = format!("SELECT _recno, {} FROM {}", columns.join(", "), a.sql_name());
+        let names: Vec<String> = columns.iter().map(|(f, ..)| format!(", \"{}\"", f.name)).collect();
+        let query = format!("SELECT _recno{} FROM {}", names.concat(), a.sql_name());
         let read = || -> rusqlite::Result<HashMap<i64, Vec<Json>>> {
             let mut stmt = d.conn.prepare(&query)?;
             let rows = stmt.query_map([], |r| {
-                let cells = a.fields.iter().enumerate().map(|(i, f)| {
+                let cells = columns.iter().enumerate().map(|(i, (f, ..))| {
                     Ok(match from_sql(f, r.get(i + 1)?) {
                         Value::Str(s) => json!(s.trim_end()),
                         v => to_json(&v).unwrap_or(Json::Null),
@@ -508,17 +674,26 @@ impl Interp {
         };
         let Ok(mut cells) = read() else { return empty };
         let rows: Vec<Json> = keys.iter().take(1000).map(|k| json!({ "recno": k.1, "cells": cells.remove(&k.1) })).collect();
-        let fields: Vec<&str> = a.fields.iter().map(|f| f.name.as_str()).collect();
-        json!({ "fields": fields, "rows": rows, "recno": a.pos })
+        let fields: Vec<&str> = columns.iter().map(|(f, ..)| f.name.as_str()).collect();
+        let titles: Vec<&str> = columns.iter().map(|(_, title, _)| title.as_str()).collect();
+        let widths: Vec<Json> = columns.iter().map(|(.., w)| w.as_ref().and_then(to_json).unwrap_or(Json::Null)).collect();
+        json!({ "fields": fields, "titles": titles, "widths": widths, "rows": rows, "recno": a.pos })
     }
 
-    /// The user clicked the row of record `recno` in a Grid.
-    pub(crate) fn grid_go(&mut self, grid: &ObjRef, recno: &Value) -> R<()> {
-        let alias = self.get_prop(grid, "RECORDSOURCE")?.display();
-        let (Some(n), Value::Num(recno)) = (self.alias_area(&alias), recno) else { return Ok(()) };
+    /// The user clicked a row of a Grid (`RecNo`), and perhaps changed a cell of it (`Field` and `Value`).
+    pub(crate) fn grid_event(&mut self, grid: &ObjRef, props: &Json) -> R<()> {
+        let prop = |name: &str| grid.0.borrow().props.get(name).cloned();
+        let alias = prop("RECORDSOURCE").map_or(String::new(), |v| v.display());
+        let (Some(n), Some(recno)) = (self.alias_area(&alias), props["RecNo"].as_i64()) else { return Ok(()) };
         // the record may have been deleted or filtered out since the grid was drawn
-        if self.keys(n)?.iter().any(|k| k.1 == *recno as i64) {
-            self.place(n, Some(*recno as i64));
+        if !self.keys(n)?.iter().any(|k| k.1 == recno) {
+            return Ok(());
+        }
+        self.place(n, Some(recno));
+        let edited = props["Field"].as_str().zip(props.get("Value").and_then(crate::object::from_json));
+        if let Some((field, value)) = edited.filter(|_| prop("READONLY") != Some(Value::Bool(true))) {
+            let source = format!("{}.{field}", self.area(n).alias);
+            self.write_source(&source, value)?;
         }
         Ok(())
     }
@@ -549,6 +724,9 @@ impl Interp {
         let conn = &self.data.as_ref().unwrap().conn;
         sql(conn.execute(&query, rusqlite::params_from_iter(params)))?;
         let id = conn.last_insert_rowid();
+        if let Some(log) = self.area(n).buffer.as_mut() {
+            log.entry(id).or_insert(None);
+        }
         self.touch(n);
         self.place(n, Some(id));
         Ok(())
@@ -563,6 +741,7 @@ impl Interp {
         let Some(id) = a.pos else { return Ok(()) };
         let query = format!("UPDATE {} SET \"{}\" = ?1 WHERE _recno = ?2", a.sql_name(), f.name);
         let value = to_sql(f, v)?;
+        self.remember(n, id)?;
         sql(self.data.as_ref().unwrap().conn.execute(&query, rusqlite::params![value, id]))?;
         self.touch(n);
         Ok(())
@@ -757,14 +936,7 @@ impl Interp {
                 if *recall && hidden {
                     self.set_deleted(false)?;
                 }
-                let done = self.each(scope, false, |it, n| {
-                    let a = it.area(n);
-                    let query = format!("UPDATE {} SET _deleted = ?1 WHERE _recno = ?2", a.sql_name());
-                    let id = a.pos;
-                    sql(it.data.as_ref().unwrap().conn.execute(&query, rusqlite::params![!*recall as i64, id]))?;
-                    it.touch(n);
-                    Ok(())
-                });
+                let done = self.each(scope, false, |it, n| it.mark(n, !*recall));
                 self.set_deleted(hidden)?;
                 done?
             }
@@ -787,9 +959,23 @@ impl Interp {
                          COMMIT;"
                     )))?;
                 }
+                // what is gone cannot be put back
+                if let Some(log) = self.area(n).buffer.as_mut() {
+                    log.clear();
+                }
                 self.touch(n);
                 self.go(n, 0)?;
             }
+            DataCmd::SetFilter(cond) => {
+                let n = self.current_area()?;
+                let a = self.area(n);
+                a.filter = cond.clone();
+                a.keys = None;
+            }
+            DataCmd::Browse => self.browse()?,
+            DataCmd::SqlSelect(q) => self.sql_select(q)?,
+            DataCmd::SqlUpdate { table, pairs, cond } => self.sql_update(table, pairs, cond.as_ref())?,
+            DataCmd::SqlDelete { table, cond } => self.sql_delete(table, cond.as_ref())?,
             DataCmd::GoTop => {
                 let n = self.current_area()?;
                 self.go(n, 0)?;
@@ -833,9 +1019,16 @@ impl Interp {
                 let from = self.index(n)? + 1;
                 self.locate(n, &scope, from)?;
             }
-            DataCmd::Index { expr, tag, descending } => {
+            DataCmd::Index { expr, text, tag, descending } => {
                 let n = self.current_area()?;
                 let key = self.area(n).tag_key();
+                // the order of a table of the folder is kept with it, for the next time it is opened
+                if self.area(n).schema == "disk" {
+                    let table = self.area(n).table.clone();
+                    let conn = &self.data.as_ref().unwrap().conn;
+                    sql(conn.execute("DELETE FROM disk._fost_tags WHERE tbl = ?1 AND name = ?2", [&table, tag]))?;
+                    sql(conn.execute("INSERT INTO disk._fost_tags VALUES (?1, ?2, ?3, ?4)", rusqlite::params![table, tag, text, descending]))?;
+                }
                 let tags = self.data.as_mut().unwrap().tags.entry(key).or_default();
                 tags.retain(|t| t.name != *tag);
                 tags.push(Tag { name: tag.clone(), expr: expr.clone(), descending: *descending });
@@ -955,6 +1148,9 @@ impl Interp {
 
     /// The functions that ask about tables. None when `name` is not one of them.
     pub(crate) fn data_function(&mut self, name: &str, args: &[Expr]) -> R<Option<Value>> {
+        if let "TABLEUPDATE" | "TABLEREVERT" | "CURSORSETPROP" = name {
+            return self.buffer_function(name, args).map(Some);
+        }
         if !["RECNO", "RECCOUNT", "EOF", "BOF", "FOUND", "DELETED", "ALIAS", "SELECT", "USED", "FCOUNT", "FIELD", "SEEK"].contains(&name) {
             return Ok(None);
         }

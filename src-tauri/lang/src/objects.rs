@@ -39,15 +39,55 @@ impl Interp {
         }
     }
 
-    pub(crate) fn get_prop(&self, obj: &ObjRef, name: &str) -> R<Value> {
+    /// The choices of a ComboBox or ListBox: a field of a table when RowSourceType is 2 (an alias,
+    /// its first field) or 6 (`alias.field`), else what the object itself holds.
+    // shortcut: one column, and no RowSourceType 3 (a SELECT); upgrade when lists need several columns or BoundColumn
+    pub(crate) fn items(&mut self, obj: &ObjRef) -> Vec<String> {
+        let (kind, source) = {
+            let o = obj.0.borrow();
+            (o.props.get("ROWSOURCETYPE").cloned(), o.props.get("ROWSOURCE").map_or(String::new(), |v| v.display()))
+        };
+        let field = match kind {
+            Some(Value::Num(k)) if k == 2.0 => self.first_field(&source),
+            Some(Value::Num(k)) if k == 6.0 => source.split(',').next().map(str::to_string),
+            _ => return obj.0.borrow().list(),
+        };
+        // a table that is not open leaves the list empty
+        field.and_then(|f| self.column(&f).ok()).unwrap_or_default()
+    }
+
+    /// BROWSE: a form with a grid on the current table.
+    pub(crate) fn browse(&mut self) -> R<()> {
+        let alias = self.data_function("ALIAS", &[])?.map_or(String::new(), |v| v.display());
+        if alias.is_empty() {
+            return Err(err("No hay ninguna tabla abierta en esta área de trabajo"));
+        }
+        let form = self.create("FORM", None, "Browse")?;
+        let grid = self.create("GRID", Some(&form), "Grid1")?;
+        for (obj, name, v) in [(&form, "CAPTION", Value::Str(alias.clone())), (&grid, "RECORDSOURCE", Value::Str(alias))] {
+            self.set_prop(obj, name, v)?;
+        }
+        for (name, size) in [("WIDTH", 520.0), ("HEIGHT", 300.0)] {
+            self.set_prop(&form, name, Value::Num(size))?;
+            self.set_prop(&grid, name, Value::Num(size))?;
+        }
+        self.init_tree(&form, Vec::new())?;
+        self.set_prop(&form, "VISIBLE", Value::Bool(true))
+    }
+
+    pub(crate) fn get_prop(&mut self, obj: &ObjRef, name: &str) -> R<Value> {
+        if name == "LISTCOUNT" {
+            return Ok(Value::Num(self.items(obj).len() as f64));
+        }
         let o = obj.0.borrow();
         Ok(match name {
+            // as in FoxPro, a grid with no columns of its own says -1
+            "COLUMNCOUNT" => Value::Num(if o.children.is_empty() { -1.0 } else { o.children.len() as f64 }),
             "PARENT" => Value::Object(o.parent().ok_or_else(|| err("Este objeto no tiene Parent"))?),
             "CONTROLCOUNT" | "PAGECOUNT" | "BUTTONCOUNT" => Value::Num(o.children.len() as f64),
             "CONTROLS" | "OBJECTS" | "PAGES" | "BUTTONS" => {
                 Value::Array(Array { cols: 0, data: o.kids().into_iter().map(Value::Object).collect() })
             }
-            "LISTCOUNT" => Value::Num(o.list().len() as f64),
             _ => o.props.get(name).cloned().ok_or_else(|| err(format!("Propiedad no encontrada: {name}")))?,
         })
     }
@@ -129,7 +169,7 @@ impl Interp {
                 o.items.remove(k);
             }
             "LIST" => {
-                let items = obj.0.borrow().list();
+                let items = self.items(obj);
                 return Ok(Value::Str(items[index(items.len())?].clone()));
             }
             _ => {
@@ -149,11 +189,11 @@ impl Interp {
         Ok(Value::Bool(true))
     }
 
-    /// Assigning PageCount or ButtonCount adds or removes pages or buttons, as in FoxPro.
+    /// Assigning PageCount, ButtonCount or ColumnCount adds or removes pages, buttons or columns, as in FoxPro.
     pub(crate) fn set_count(&mut self, obj: &ObjRef, v: Value) -> R<()> {
         let base = obj.0.borrow().base;
         let (Some((class, prefix)), Value::Num(count)) = (object::member_of(base), v) else {
-            return Err(err("PageCount y ButtonCount necesitan un número, en un PageFrame o un grupo"));
+            return Err(err("PageCount, ButtonCount y ColumnCount necesitan un número, en un PageFrame, un grupo o un Grid"));
         };
         let count = count.clamp(0.0, 100.0) as usize;
         loop {
@@ -163,11 +203,16 @@ impl Interp {
             } else if kids.len() < count {
                 let name = format!("{prefix}{}", kids.len() + 1);
                 let child = self.create(class, Some(obj), &name)?;
-                self.set_prop(&child, "CAPTION", Value::Str(name))?;
+                if class == "COLUMN" {
+                    self.create("HEADER", Some(&child), "Header1")?;
+                } else {
+                    self.set_prop(&child, "CAPTION", Value::Str(name))?;
+                }
                 // buttons stack downwards, each under the one before
-                if let Some(last) = kids.last().filter(|_| class != "PAGE") {
-                    let below = |prop| if let Ok(Value::Num(n)) = self.get_prop(last, prop) { n } else { 0.0 };
-                    self.set_prop(&child, "TOP", Value::Num(below("TOP") + below("HEIGHT") + 2.0))?;
+                if let Some(last) = kids.last().filter(|_| !matches!(class, "PAGE" | "COLUMN")) {
+                    let mut below = |prop| if let Ok(Value::Num(n)) = self.get_prop(last, prop) { n } else { 0.0 };
+                    let top = below("TOP") + below("HEIGHT") + 2.0;
+                    self.set_prop(&child, "TOP", Value::Num(top))?;
                 }
                 self.init_tree(&child, Vec::new())?;
             } else {
@@ -283,7 +328,7 @@ impl Interp {
     }
 
     /// Splits `CHILD.GRANDCHILD.NAME` into the object that owns the last name, and that name.
-    fn resolve(&self, obj: &ObjRef, path: &str) -> R<(ObjRef, String)> {
+    fn resolve(&mut self, obj: &ObjRef, path: &str) -> R<(ObjRef, String)> {
         let mut parts: Vec<&str> = path.split('.').collect();
         let last = parts.pop().unwrap().to_string();
         let mut cur = obj.clone();
@@ -382,9 +427,11 @@ impl Interp {
             for (key, v) in props.as_object().into_iter().flatten() {
                 let v = from_json(v).ok_or_else(|| err(format!("El valor de {key} no es válido")))?;
                 let key = key.to_uppercase();
-                // a click on a row of a Grid
-                if key == "RECNO" {
-                    it.grid_go(&obj, &v)?;
+                // a click on a row of a Grid, or a cell of it edited
+                if obj.0.borrow().base == "GRID" && matches!(key.as_str(), "RECNO" | "FIELD" | "VALUE") {
+                    if key == "RECNO" {
+                        it.grid_event(&obj, props)?;
+                    }
                     continue;
                 }
                 obj.0.borrow_mut().props.insert(key.clone(), v);
@@ -452,8 +499,7 @@ impl Interp {
 
     fn snapshot(&mut self, obj: &ObjRef) -> Json {
         if obj.0.borrow().base == "GRID" {
-            let alias = self.get_prop(obj, "RECORDSOURCE").map_or(String::new(), |v| v.display());
-            let grid = self.grid_json(&alias);
+            let grid = self.grid_json(obj);
             let mut node = self.snapshot_plain(obj);
             node["grid"] = grid;
             return node;
@@ -464,6 +510,7 @@ impl Interp {
     fn snapshot_plain(&mut self, obj: &ObjRef) -> Json {
         let kids = obj.0.borrow().kids();
         let children: Vec<Json> = kids.iter().map(|k| self.snapshot(k)).collect();
+        let items = self.items(obj);
         let o = obj.0.borrow();
         let props: serde_json::Map<String, Json> = o.props.iter().filter_map(|(k, v)| Some((k.clone(), to_json(v)?))).collect();
         // the events somebody handles: the UI only needs to report those
@@ -473,6 +520,6 @@ impl Interp {
             events.extend(class.methods.iter().map(|(name, _)| name.clone()));
             next = Some(class.parent.clone());
         }
-        json!({ "id": o.id, "base": o.base, "props": props, "items": o.list(), "events": events, "children": children })
+        json!({ "id": o.id, "base": o.base, "props": props, "items": items, "events": events, "children": children })
     }
 }

@@ -13,12 +13,14 @@ pub const NAMES: &[&str] = &[
     "DAY", "DOW", "CDOW", "CMONTH", "GOMONTH", "EMPTY", "ISNULL", "NVL", "BETWEEN", "INLIST", "ALEN", "IIF", "TYPE",
     "VARTYPE", "EVALUATE", "RAND", "RGB", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX", "RECNO", "RECCOUNT", "EOF", "BOF", "FOUND", "DELETED", "ALIAS",
     "SELECT", "USED", "FCOUNT", "FIELD", "SEEK", "MENU", "PAD", "POPUP", "BAR", "PROMPT",
+    "TABLEUPDATE", "TABLEREVERT", "CURSORSETPROP", "MESSAGE", "LINENO", "ERROR",
 ];
 
 /// Implemented by the interpreter, not by `call`.
 #[cfg(test)]
 const SPECIAL: &[&str] = &["IIF", "TYPE", "VARTYPE", "EVALUATE", "RAND", "CREATEOBJECT", "MESSAGEBOX", "DODEFAULT", "INPUTBOX", "RECNO", "RECCOUNT", "EOF",
     "BOF", "FOUND", "DELETED", "ALIAS", "SELECT", "USED", "FCOUNT", "FIELD", "SEEK", "MENU", "PAD", "POPUP", "BAR", "PROMPT",
+    "TABLEUPDATE", "TABLEREVERT", "CURSORSETPROP", "MESSAGE", "LINENO", "ERROR",
 ];
 
 pub fn resolve(name: &str) -> Option<&'static str> {
@@ -42,6 +44,67 @@ fn at(needle: &str, hay: &str, occ: usize, from_end: bool) -> f64 {
     }
     let hit = if from_end { hay.rmatch_indices(needle).nth(occ - 1) } else { hay.match_indices(needle).nth(occ - 1) };
     hit.map_or(0.0, |(i, _)| hay[..i].chars().count() as f64 + 1.0)
+}
+
+/// TRANSFORM(value, mask): the value drawn through a FoxPro picture.
+/// Before a space, `@` functions: `!` upper case, `L` leading zeros, `Z` blank when zero, `$` currency,
+/// `R` keep the literals of the mask without spending characters on them.
+// shortcut: the pictures and functions old programs use most; the rest of the mask is copied as it is
+fn picture(v: &Value, mask: &str) -> String {
+    let (functions, pattern) = match mask.strip_prefix('@') {
+        Some(rest) => rest.split_once(' ').unwrap_or((rest, "")),
+        None => ("", mask),
+    };
+    let has = |f: char| functions.to_uppercase().contains(f);
+    let width = pattern.chars().count();
+    match v {
+        Num(n) if pattern.is_empty() => if has('Z') && *n == 0.0 { String::new() } else { v.display() },
+        Num(n) if has('Z') && *n == 0.0 => " ".repeat(width),
+        Num(n) => {
+            let decimals = pattern.split_once('.').map_or(0, |(_, d)| d.chars().filter(|c| "9#".contains(*c)).count());
+            let digits = format!("{:.*}", decimals, n.abs());
+            let (whole, fraction) = digits.split_once('.').unwrap_or((&digits, ""));
+            let mut text = String::new();
+            for (i, d) in whole.chars().enumerate() {
+                if pattern.contains(',') && i > 0 && (whole.len() - i) % 3 == 0 {
+                    text.push(',');
+                }
+                text.push(d);
+            }
+            if decimals > 0 {
+                text = format!("{text}.{fraction}");
+            }
+            let sign = if *n < 0.0 { "-" } else { "" };
+            let money = if pattern.contains('$') || has('$') { "$" } else { "" };
+            let text = format!("{money}{sign}{text}");
+            match width.checked_sub(text.chars().count()) {
+                Some(room) => (if has('L') { "0" } else { " " }).repeat(room) + &text,
+                // as in FoxPro, a number that does not fit shows as asterisks
+                None => "*".repeat(width),
+            }
+        }
+        Str(text) => {
+            let text = if has('!') { text.to_uppercase() } else { text.clone() };
+            if pattern.is_empty() {
+                return text;
+            }
+            let (mut chars, mut out) = (text.chars(), String::new());
+            for m in pattern.chars() {
+                match m {
+                    '!' => out.extend(chars.next().map(|c| c.to_uppercase().next().unwrap_or(c))),
+                    'X' | 'A' | '9' | '#' | 'N' => out.extend(chars.next()),
+                    literal => {
+                        if !has('R') {
+                            chars.next();
+                        }
+                        out.push(literal);
+                    }
+                }
+            }
+            out
+        }
+        other => other.display(),
+    }
 }
 
 pub fn call(name: &str, a: &[Value]) -> Result<Value, String> {
@@ -134,7 +197,7 @@ pub fn call(name: &str, a: &[Value]) -> Result<Value, String> {
             }
             Num(t[..end].parse().unwrap_or(0.0))
         }
-        "TRANSFORM" if a.len() > 1 => return Err("TRANSFORM con máscara aún no está soportado".into()),
+        "TRANSFORM" if a.len() > 1 => Str(picture(v(0)?, s(1)?)),
         "TRANSFORM" => Str(v(0)?.display()),
         "CHRTRAN" => {
             let (from, to) = (chars(1)?, chars(2)?);
