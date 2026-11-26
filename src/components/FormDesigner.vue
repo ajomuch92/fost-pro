@@ -27,7 +27,7 @@ import {
   Type,
   X,
 } from "@lucide/vue";
-import { assets, classes, type DrawNode } from "../engine";
+import { assets, classes, type DrawNode, type EditAction } from "../engine";
 import FormControl, { colorCss, pageTop } from "./FormControl.vue";
 import ProgramEditor from "./ProgramEditor.vue";
 
@@ -147,7 +147,7 @@ function rehome(target: Placed) {
   if (num(node, "Left") < 0 || num(node, "Left") >= room.w) put(node, "Left", 10);
   if (num(node, "Top") < 0 || num(node, "Top") >= room.h) put(node, "Top", 10);
   reveal(node);
-  emit("change");
+  changed();
 }
 
 /** Brings to the front the page a node is on, and the pages that one is on, so it can be seen. */
@@ -188,7 +188,7 @@ function set(node: DesignNode, key: string, v: unknown) {
   put(node, key, v);
   // changing the property itself is also a wish to see that page
   if (key === "ActivePage") front.delete(node);
-  emit("change");
+  changed();
 }
 
 function rename(node: DesignNode, name: string) {
@@ -202,7 +202,7 @@ function rename(node: DesignNode, name: string) {
       : "";
   if (nameError.value) return;
   node.props.Name = name;
-  emit("change");
+  changed();
 }
 
 const icons: Record<string, Component> = {
@@ -259,7 +259,7 @@ function add(cls: string, into = hostFor(cls)) {
   // as in FoxPro, a group or page frame starts with two members
   if (cls in groups) for (let i = 0; i < 2; i++) add(groups[cls], made);
   selected.value = made;
-  emit("change");
+  changed();
 }
 
 function remove() {
@@ -267,7 +267,7 @@ function remove() {
   if (!parent) return;
   parent.controls = parent.controls.filter((c) => c !== selected.value);
   selected.value = parent;
-  emit("change");
+  changed();
 }
 
 /** While a control is dragged over a container other than its own: where it would land. */
@@ -346,6 +346,8 @@ function edited() {
   const text = code.value!.getText();
   if (text.trim()) selected.value.methods[event.value] = text;
   else delete selected.value.methods[event.value];
+  // code has its own undo in its editor: here it only joins the design step it was written in
+  history[at] = serialize();
   emit("change");
 }
 
@@ -369,17 +371,59 @@ function normalize(node: Partial<DesignNode>, fallback: string): DesignNode {
   return made;
 }
 
+/** The form as the text of its file. Empty `methods` and `controls` are left out. */
+const serialize = () =>
+  JSON.stringify(form.value, (k, v) => ((k === "methods" || k === "controls") && !Object.keys(v).length ? undefined : v), 2) + "\n";
+
+function load(text: string) {
+  const next = text.trim() ? normalize(JSON.parse(text), "Form") : blank();
+  if (next.class !== "Form") throw new Error("El archivo no describe un formulario");
+  form.value = next;
+  selected.value = form.value;
+  nameError.value = "";
+}
+
+// The form after each change to its design, to undo and redo them.
+let history: string[] = [];
+let at = -1;
+function changed() {
+  history.splice(at + 1);
+  history.push(serialize());
+  at = history.length - 1;
+  emit("change");
+}
+/** Goes to another step of the history, keeping the same object selected when it is still there. */
+function step(to: number) {
+  if (to < 0 || to >= history.length) return;
+  const name = selected.value.props.Name;
+  at = to;
+  load(history[at]);
+  selected.value = tree.value.find((p) => p.node.props.Name === name)?.node ?? form.value;
+  emit("change");
+}
+
+/** Whether the code editor, and not the drawing, was used last: Edit acts on that one. */
+const inCode = ref(false);
+/** The names to offer after a dot in the code: the form's objects, then every property and the usual methods. */
+const members = () => [
+  ...new Set([
+    ...tree.value.map((p) => String(p.node.props.Name)),
+    ...classes.value.flatMap((c) => c.props.map((p) => p[0])),
+    ...["Parent", "Release", "Refresh", "SetFocus", "Show", "Hide", "AddItem", "RemoveItem", "Clear", "AddObject", "RemoveObject"],
+  ]),
+];
+
 defineExpose({
-  getText: () =>
-    // empty `methods` and `controls` are left out of the file
-    JSON.stringify(form.value, (k, v) => ((k === "methods" || k === "controls") && !Object.keys(v).length ? undefined : v), 2) +
-    "\n",
+  getText: serialize,
   setText(text: string) {
-    const next = text.trim() ? normalize(JSON.parse(text), "Form") : blank();
-    if (next.class !== "Form") throw new Error("El archivo no describe un formulario");
-    form.value = next;
-    selected.value = form.value;
-    nameError.value = "";
+    load(text);
+    history = [serialize()];
+    at = 0;
+  },
+  /** An action of the Edit menu: undo and redo act on the drawing unless the code was used last. */
+  edit(action: EditAction) {
+    if (inCode.value || (action !== "undo" && action !== "redo")) return code.value!.edit(action);
+    step(at + (action === "undo" ? -1 : 1));
   },
 });
 
@@ -393,7 +437,7 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
   <div class="grid h-full min-h-0 grid-cols-[12rem_1fr_17rem] text-sm">
     <nav class="flex flex-col gap-1 overflow-y-auto border-r border-neutral-300 p-2 dark:border-neutral-700" aria-label="Agregar control">
       <button
-        v-for="c in classes.filter((c) => c.name !== 'Custom' && c.name !== 'Form')"
+        v-for="c in classes.filter((c) => !['Custom', 'Form', 'Column', 'Header'].includes(c.name))"
         :key="c.name"
         type="button"
         :class="tool"
@@ -407,7 +451,11 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
     </nav>
 
     <div class="flex min-h-0 min-w-0 flex-col">
-      <div class="min-h-0 flex-1 overflow-auto bg-neutral-300 p-4 select-none dark:bg-neutral-800" @pointerdown.self="selected = form">
+      <div
+        class="min-h-0 flex-1 overflow-auto bg-neutral-300 p-4 select-none dark:bg-neutral-800"
+        @pointerdown.self="selected = form"
+        @pointerdown="inCode = false"
+      >
         <!-- the corners are rounded piece by piece: clipping the whole window would cut off the resize handle -->
         <div
           class="inline-block border border-neutral-600 shadow-lg"
@@ -484,7 +532,7 @@ const handle = "absolute -right-1 -bottom-1 size-2 cursor-nwse-resize bg-blue-60
             <option v-for="m in methodNames(selected)" :key="m" :value="m">{{ m }}{{ selected.methods[m] ? " •" : "" }}</option>
           </select>
         </label>
-        <ProgramEditor ref="code" class="min-h-0 flex-1" @change="edited" />
+        <ProgramEditor ref="code" class="min-h-0 flex-1" :members="members" @change="edited" @focusin="inCode = true" />
       </div>
     </div>
 

@@ -1,17 +1,10 @@
 <script setup lang="ts">
 // Everything the language supports, searchable. The lists come from the interpreter itself.
 import { computed, nextTick, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { X } from "@lucide/vue";
-import { classes, helpOpen, report } from "../engine";
+import { classes, helpOpen, reference } from "../engine";
 
-type Entry = { syntax: string; text: string; group?: string };
-
-const reference = ref<{ commands: Entry[]; functions: Entry[]; members: Entry[] }>({ commands: [], functions: [], members: [] });
-invoke<typeof reference.value>("reference").then(
-  (r) => (reference.value = r),
-  (e) => report(String(e)),
-);
+type Entry = (typeof reference.value.commands)[number];
 
 const query = ref("");
 const search = ref<HTMLInputElement>();

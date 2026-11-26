@@ -3,12 +3,14 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { AppWindow, CircleQuestionMark, FilePlus, FolderKanban, FolderOpen, Play, Save } from "@lucide/vue";
-import { dir, helpOpen, openRequest, project, report, run, runForm } from "./engine";
+import { AppWindow, CircleQuestionMark, FilePlus, FolderKanban, FolderOpen, Menu, Pencil, Play, Save } from "@lucide/vue";
+import { dir, type EditAction, helpOpen, type MenuItem, openRequest, project, report, run, runForm } from "./engine";
 import CommandWindow from "./components/CommandWindow.vue";
 import FormDesigner from "./components/FormDesigner.vue";
 import FormLayer from "./components/FormLayer.vue";
 import MenuBar from "./components/MenuBar.vue";
+import MenuDesigner from "./components/MenuDesigner.vue";
+import MenuItems from "./components/MenuItems.vue";
 import HelpScreen from "./components/HelpScreen.vue";
 import { closeFormWindows } from "./formWindows";
 import ProjectPanel from "./components/ProjectPanel.vue";
@@ -114,6 +116,42 @@ function runProject(program: string) {
   run(`DO ${stem(program)}`, `DO ${stem(program)}`);
 }
 
+/** The panel renamed or deleted a file: if it is the open one, the document follows it, or is left unsaved. */
+function moved(from: string, to: string | null) {
+  if (path.value !== `${project.value}/${from}`) return;
+  path.value = to && `${project.value}/${to}`;
+  if (!to) dirty.value = true;
+}
+
+// The Edit menu acts on the program's editor, or on the form designer, which decides between its drawing and its code.
+const editOpen = ref(false);
+const editMenu = ref<HTMLElement>();
+const editItems: MenuItem[] = (
+  [
+    ["undo", "Deshacer (Ctrl+Z)"],
+    ["redo", "Rehacer (Ctrl+Y)"],
+    ["-", "\\-"],
+    ["cut", "Cortar (Ctrl+X)"],
+    ["copy", "Copiar (Ctrl+C)"],
+    ["paste", "Pegar (Ctrl+V)"],
+    ["selectAll", "Seleccionar todo (Ctrl+A)"],
+    ["--", "\\-"],
+    ["find", "Buscar y reemplazar (Ctrl+F)"],
+  ] as const
+).map(([key, prompt]) => ({ key, prompt, disabled: false, popup: null, items: null }));
+function edit(action: string) {
+  editOpen.value = false;
+  attempt(async () => view(kind.value).edit(action as EditAction));
+}
+const closeEdit = (e: Event) => editMenu.value?.contains(e.target as Node) || (editOpen.value = false);
+
+const menuDesigner = ref(false);
+/** The menu designer's code goes into the program, where the cursor is. */
+function insertMenu(code: string) {
+  menuDesigner.value = false;
+  editor.value!.insert(code);
+}
+
 /** Opens a file of the project from its panel; `line` is where a class is defined. */
 const openFromProject = (file: string, line?: number) =>
   attempt(async () => {
@@ -144,6 +182,14 @@ watch(openRequest, (request) => {
 });
 
 function shortcut(e: KeyboardEvent) {
+  // undo and redo of the form's drawing; fields and code editors keep their own
+  const typing = (e.target as HTMLElement).closest?.("input, textarea, select, .cm-editor");
+  const z = (e.ctrlKey || e.metaKey) && ["z", "y"].includes(e.key.toLowerCase());
+  if (z && kind.value === "form" && !typing) {
+    e.preventDefault();
+    designer.value!.edit(e.key.toLowerCase() === "y" || e.shiftKey ? "redo" : "undo");
+    return;
+  }
   const action =
     e.key === "F5"
       ? runDoc
@@ -162,6 +208,7 @@ function shortcut(e: KeyboardEvent) {
 let stopCloseGuard = () => {};
 onMounted(async () => {
   window.addEventListener("keydown", shortcut);
+  window.addEventListener("pointerdown", closeEdit);
   // closing the window must not silently drop unsaved work
   stopCloseGuard = await getCurrentWindow().onCloseRequested(async (event) => {
     if (!(await canDiscard())) return event.preventDefault();
@@ -171,6 +218,7 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", shortcut);
+  window.removeEventListener("pointerdown", closeEdit);
   stopCloseGuard();
 });
 
@@ -185,13 +233,29 @@ const button = "flex items-center gap-1.5 rounded px-2 py-1 hover:bg-neutral-200
       <button type="button" :class="button" title="Abrir o crear la carpeta de un proyecto" @click="openProject"><FolderKanban :size="16" aria-hidden="true" />Proyecto</button>
       <button type="button" :class="button" title="Ctrl+O" @click="openFile"><FolderOpen :size="16" aria-hidden="true" />Abrir</button>
       <button type="button" :class="button" title="Ctrl+S" @click="saveFile"><Save :size="16" aria-hidden="true" />Guardar</button>
+      <div ref="editMenu" class="relative">
+        <button type="button" :class="button" aria-haspopup="menu" :aria-expanded="editOpen" @click="editOpen = !editOpen">
+          <Pencil :size="16" aria-hidden="true" />Editar
+        </button>
+        <MenuItems v-if="editOpen" :items="editItems" popup="editar" class="top-full left-0" @choose="(_, action) => edit(action)" />
+      </div>
+      <button
+        type="button"
+        :class="button"
+        :disabled="kind !== 'program'"
+        class="disabled:opacity-40"
+        title="Diseñar un menú y escribir su código en el programa"
+        @click="menuDesigner = true"
+      >
+        <Menu :size="16" aria-hidden="true" />Menú
+      </button>
       <button type="button" :class="button" title="F5" @click="runDoc"><Play :size="16" aria-hidden="true" />Ejecutar (F5)</button>
       <button type="button" :class="button" title="F1" @click="helpOpen = !helpOpen"><CircleQuestionMark :size="16" aria-hidden="true" />Ayuda (F1)</button>
       <span class="ml-auto text-neutral-500">{{ name }}{{ dirty ? " (sin guardar)" : "" }}</span>
     </header>
     <MenuBar />
     <div class="flex min-h-0 flex-1">
-    <ProjectPanel ref="panel" @open="openFromProject" @run="runProject" />
+    <ProjectPanel ref="panel" @open="openFromProject" @run="runProject" @moved="moved" />
     <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <ProgramEditor v-show="kind === 'program'" ref="editor" class="min-h-0 flex-1" @change="dirty = true" />
       <FormDesigner v-show="kind === 'form'" ref="designer" class="min-h-0 flex-1" @change="dirty = true" />
@@ -199,6 +263,7 @@ const button = "flex items-center gap-1.5 rounded px-2 py-1 hover:bg-neutral-200
       <FormLayer />
       <HelpScreen />
       <PromptDialog />
+      <MenuDesigner v-if="menuDesigner" @insert="insertMenu" @close="menuDesigner = false" />
     </div>
     </div>
   </main>
