@@ -82,7 +82,12 @@ SQL sobre una tabla.
   objetos y propiedades del formulario; menú Editar con deshacer, rehacer, cortar, copiar, pegar,
   seleccionar todo y buscar y reemplazar; el dibujo del formulario tiene su propio deshacer (Ctrl+Z).
   El diseñador de menús (botón Menú) escribe el código `DEFINE PAD`/`DEFINE BAR` en el programa. El botón
-  derecho sobre el panel del proyecto crea programas y formularios, y renombra o elimina archivos.
+  derecho sobre el panel del proyecto ofrece lo propio de cada elemento: abrir, ejecutar, marcar como
+  principal, renombrar o eliminar un archivo; ir a la definición de una clase; examinar una tabla.
+- **Áreas ajustables:** el panel del proyecto, la ventana de comandos y, en el diseñador, los controles,
+  las propiedades y el código cambian de tamaño arrastrando la barra que los separa. Un doble clic en la
+  barra, o arrastrarla hasta el borde, cierra el área; otro doble clic la devuelve. Los tamaños se
+  recuerdan.
 - **IDE:** editor con resaltado, diseñador de formularios (arrastrar, redimensionar, propiedades, código
   por evento; los controles se arrastran dentro y fuera de contenedores y pestañas), ventana de comandos
   con historial, y
