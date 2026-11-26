@@ -126,6 +126,21 @@ fn read_binary(path: String, dir: Option<String>) -> Result<tauri::ipc::Response
     std::fs::read(full).map(tauri::ipc::Response::new).map_err(|e| format!("No se pudo abrir {path}: {e}"))
 }
 
+/// Copies a file the user picked into a project, creating the folder it goes to.
+/// A file already there is left alone: it may be a different picture with the same name.
+#[tauri::command]
+fn copy_file(from: String, to: String) -> Result<(), String> {
+    let target = std::path::Path::new(&to);
+    if target.exists() {
+        return Err(format!("Ya existe {to}"));
+    }
+    let copy = || {
+        std::fs::create_dir_all(target.parent().unwrap_or(std::path::Path::new(".")))?;
+        std::fs::copy(&from, target)
+    };
+    copy().map(|_| ()).map_err(|e| format!("No se pudo copiar {from}: {e}"))
+}
+
 #[tauri::command]
 fn write_file(path: String, text: String) -> Result<(), String> {
     std::fs::write(&path, text).map_err(|e| format!("No se pudo guardar {path}: {e}"))
@@ -235,7 +250,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            run_code, run_form, ui_event, menu_event, stop_code, answer_prompt, class_info, reference, project_info, read_file, read_binary, write_file
+            run_code, run_form, ui_event, menu_event, stop_code, answer_prompt, class_info, reference, project_info, read_file, read_binary, write_file, copy_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -244,6 +259,26 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_file_makes_the_folder_and_never_overwrites() {
+        let dir = tempfile_dir("copy");
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        std::fs::write(path("a.png"), "uno").unwrap();
+        assert_eq!(copy_file(path("a.png"), path("assets/a.png")), Ok(()));
+        std::fs::write(path("a.png"), "dos").unwrap();
+        assert!(copy_file(path("a.png"), path("assets/a.png")).unwrap_err().starts_with("Ya existe"));
+        assert_eq!(std::fs::read_to_string(path("assets/a.png")).unwrap(), "uno");
+        assert!(copy_file(path("nadie.png"), path("assets/b.png")).unwrap_err().starts_with("No se pudo copiar"));
+    }
+
+    /// A folder of its own for a test, new on every run so nothing has to be cleaned up first.
+    fn tempfile_dir(tag: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("fost-{tag}-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn engine_keeps_state_between_jobs() {

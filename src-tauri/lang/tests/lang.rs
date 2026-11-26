@@ -804,12 +804,15 @@ fn a_project_lists_what_its_folder_holds() {
     std::fs::create_dir_all(&dir).unwrap();
     // an empty folder is an empty project, and looking at it creates nothing
     let empty = fost_lang::project(&dir);
-    assert_eq!(empty, serde_json::json!({ "programs": [], "forms": [], "classes": [], "tables": [] }));
+    assert_eq!(empty, serde_json::json!({ "file": null, "main": null, "programs": [], "forms": [], "classes": [], "tables": [], "assets": [] }));
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 
     std::fs::write(dir.join("Main.fost"), "? 1\nDEFINE CLASS Ficha AS Form\nENDDEFINE").unwrap();
     std::fs::write(dir.join("alta.fostform"), "{}").unwrap();
     std::fs::write(dir.join("notas.txt"), "").unwrap();
+    std::fs::write(dir.join("tienda.fostproj"), r#"{ "main": "Main.fost" }"#).unwrap();
+    std::fs::create_dir_all(dir.join("assets/sub")).unwrap();
+    std::fs::write(dir.join("assets/logo.png"), "").unwrap();
     let mut it = Interp::default();
     it.dir = dir.clone();
     it.run("CREATE TABLE clientes (nombre C(20), saldo N(10, 2))\nCREATE CURSOR temporal (x L)").unwrap();
@@ -818,6 +821,9 @@ fn a_project_lists_what_its_folder_holds() {
     drop(it);
     std::fs::remove_dir_all(dir).unwrap();
     assert_eq!(project["programs"], serde_json::json!(["Main.fost"]));
+    assert_eq!((&project["file"], &project["main"]), (&serde_json::json!("tienda.fostproj"), &serde_json::json!("Main.fost")));
+    // folders inside assets are not assets
+    assert_eq!(project["assets"], serde_json::json!(["assets/logo.png"]));
     assert_eq!(project["forms"], serde_json::json!(["alta.fostform"]));
     assert_eq!(project["classes"], serde_json::json!([{ "name": "Ficha", "parent": "Form", "file": "Main.fost", "line": 2 }]));
     // cursors live in memory: they are not part of the project
