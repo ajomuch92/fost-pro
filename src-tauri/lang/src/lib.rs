@@ -4,6 +4,7 @@ mod builtins;
 mod data;
 mod interp;
 mod help;
+mod help_en;
 mod lexer;
 mod menu;
 mod object;

@@ -217,10 +217,34 @@ pub(crate) fn function_name(syntax: &str) -> &str {
     syntax.split('(').next().unwrap()
 }
 
-pub fn reference() -> Json {
-    let commands: Vec<Json> = COMMANDS.iter().map(|(syntax, text)| json!({ "syntax": syntax, "text": text })).collect();
+/// The reference, in Spanish or in English.
+pub fn reference(english: bool) -> Json {
+    use crate::help_en as en;
+    let (commands, functions, members) = if english { (en::COMMANDS, en::FUNCTIONS, en::MEMBERS) } else { (COMMANDS, FUNCTIONS, MEMBERS) };
+    let commands: Vec<Json> = commands.iter().map(|(syntax, text)| json!({ "syntax": syntax, "text": text })).collect();
     let functions: Vec<Json> =
-        FUNCTIONS.iter().map(|(group, syntax, text)| json!({ "group": group, "syntax": syntax, "text": text })).collect();
-    let members: Vec<Json> = MEMBERS.iter().map(|(syntax, text)| json!({ "syntax": syntax, "text": text })).collect();
+        functions.iter().map(|(group, syntax, text)| json!({ "group": group, "syntax": syntax, "text": text })).collect();
+    let members: Vec<Json> = members.iter().map(|(syntax, text)| json!({ "syntax": syntax, "text": text })).collect();
     json!({ "commands": commands, "functions": functions, "members": members })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::help_en as en;
+
+    // the English reference is the Spanish one, entry by entry
+    #[test]
+    fn both_languages_list_the_same_things() {
+        assert_eq!(COMMANDS.len(), en::COMMANDS.len());
+        assert_eq!(MEMBERS.len(), en::MEMBERS.len());
+        let names = |list: &[(&'static str, &'static str, &'static str)]| list.iter().map(|f| function_name(f.1)).collect::<Vec<_>>();
+        assert_eq!(names(FUNCTIONS), names(en::FUNCTIONS));
+        // the first word of a command is the command itself, whatever the language
+        let word = |list: &[(&'static str, &'static str)]| list.iter().map(|c| c.0.split(' ').next().unwrap()).collect::<Vec<_>>();
+        let (es, english) = (word(COMMANDS), word(en::COMMANDS));
+        let differ: Vec<_> = es.iter().zip(&english).filter(|(a, b)| a != b).collect();
+        // only the entries that are words and not commands: "alcance", "comando con &variable", "sentencia ;"
+        assert_eq!(differ.len(), 3, "{differ:?}");
+    }
 }

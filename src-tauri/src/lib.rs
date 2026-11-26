@@ -100,8 +100,8 @@ fn project_info(dir: String) -> Json {
 }
 
 #[tauri::command]
-fn reference() -> Json {
-    fost_lang::reference()
+fn reference(english: bool) -> Json {
+    fost_lang::reference(english)
 }
 
 /// Where the UI sends the answer to an INPUTBOX() the interpreter is waiting on. None: cancelled.

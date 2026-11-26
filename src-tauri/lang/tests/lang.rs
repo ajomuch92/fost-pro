@@ -385,7 +385,8 @@ fn help_and_inputbox() {
     it.run("? INPUTBOX('Nombre', 'Datos', 'Ana') + '|' + INPUTBOX('x')\nHELP").unwrap();
     assert_eq!(it.take_output(), "\nAna|");
     assert!(it.help);
-    let reference = fost_lang::reference();
+    let reference = fost_lang::reference(false);
+    assert_eq!(fost_lang::reference(true)["functions"][0]["syntax"], "LEN(text)");
     assert!(reference["commands"].as_array().unwrap().len() > 30);
     assert_eq!(reference["functions"][0]["syntax"], "LEN(texto)");
     it.run("f = CREATEOBJECT('Form')\n? f.MinButton, f.MaxButton, f.WindowState").unwrap();
