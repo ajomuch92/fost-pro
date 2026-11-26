@@ -14,7 +14,14 @@ export type FormNode = {
   events: string[];
   children: FormNode[];
   /** For a Grid: the table it shows, and the number of its current record. */
-  grid?: { fields: string[]; rows: { recno: number; cells: unknown[] }[]; recno: number | null };
+  grid?: {
+    /** The field, title and width (null: as wide as it needs) of each column. */
+    fields: string[];
+    titles: string[];
+    widths: (number | null)[];
+    rows: { recno: number; cells: unknown[] }[];
+    recno: number | null;
+  };
 };
 /** What it takes to draw a control: a node of a running form, or one the designer is laying out. */
 export type DrawNode = Pick<FormNode, "base" | "props"> &
@@ -94,6 +101,16 @@ export const helpOpen = ref(false);
 export const question = ref<{ prompt: string; title: string; default: string } | null>(null);
 
 export const report = (text: string) => entries.value.push({ kind: "err", text });
+
+type HelpEntry = { syntax: string; text: string; group?: string };
+/** Everything the language supports, as the interpreter itself lists it. */
+export const reference = ref<{ commands: HelpEntry[]; functions: HelpEntry[]; members: HelpEntry[] }>({ commands: [], functions: [], members: [] });
+invoke<typeof reference.value>("reference").then(
+  (r) => (reference.value = r),
+  (e) => report(String(e)),
+);
+/** What the Edit menu can ask of an editor. */
+export type EditAction = "undo" | "redo" | "cut" | "copy" | "paste" | "selectAll" | "find";
 
 invoke<ClassInfo[]>("class_info").then(
   (info) => (classes.value = info),

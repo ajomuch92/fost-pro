@@ -143,6 +143,19 @@ onBeforeUnmount(() => {
 });
 
 const base = computed(() => props.node.base);
+/** The cell of a Grid being edited: its record and the position of its column. */
+const editing = ref<{ recno: number; column: number } | null>(null);
+const vFocus = { mounted: (el: HTMLInputElement) => el.select() };
+
+/** Stores an edited cell, unless Escape gave it up or nothing changed. Logical fields take .T., .F., and the like. */
+function commit(recno: number, column: number, before: unknown, e: Event) {
+  if (!editing.value) return;
+  editing.value = null;
+  const text = (e.target as HTMLInputElement).value;
+  const value = typeof before === "boolean" ? /^\.?[tysv1]/i.test(text.trim()) : typeof before === "number" ? Number(text) || 0 : text;
+  if (value !== before) act({ RecNo: recno, Field: props.node.grid!.fields[column], Value: value }, ["AfterRowColChange"]);
+}
+
 /** A value of a table, as a Grid shows it. */
 const cellText = (v: unknown) => (v === true ? ".T." : v === false ? ".F." : String(v ?? ""));
 </script>
@@ -276,12 +289,17 @@ const cellText = (v: unknown) => (v === true ? ".T." : v === false ? ".F." : Str
     :style="style"
     :title="tip"
   >
-    <table class="w-full border-collapse" :aria-label="p.NAME">
+    <table class="border-collapse" :class="{ 'w-full': !node.grid?.widths.some((w) => w != null) }" :aria-label="p.NAME">
       <thead class="sticky top-0 bg-neutral-200 text-black">
         <tr>
           <!-- with no table yet, as while designing, one empty heading says what this is -->
-          <th v-for="f in node.grid?.fields.length ? node.grid.fields : ['Grid']" :key="f" class="border border-neutral-400 px-1 text-left">
-            {{ f }}
+          <th
+            v-for="(t, i) in node.grid?.titles.length ? node.grid.titles : ['Grid']"
+            :key="i"
+            class="overflow-hidden border border-neutral-400 px-1 text-left whitespace-nowrap"
+            :style="{ width: node.grid?.widths[i] == null ? undefined : `${node.grid.widths[i]}px`, maxWidth: node.grid?.widths[i] == null ? undefined : `${node.grid.widths[i]}px` }"
+          >
+            {{ t }}
           </th>
         </tr>
       </thead>
@@ -292,9 +310,28 @@ const cellText = (v: unknown) => (v === true ? ".T." : v === false ? ".F." : Str
           class="cursor-default"
           :class="row.recno === node.grid!.recno ? 'bg-blue-600 text-white' : 'hover:bg-neutral-100'"
           :aria-selected="row.recno === node.grid!.recno"
-          @click="act({ RecNo: row.recno }, ['AfterRowColChange'])"
+          @click="row.recno === node.grid!.recno || act({ RecNo: row.recno }, ['AfterRowColChange'])"
         >
-          <td v-for="(cell, i) in row.cells" :key="i" class="border border-neutral-300 px-1 whitespace-nowrap">{{ cellText(cell) }}</td>
+          <td
+            v-for="(cell, i) in row.cells"
+            :key="i"
+            class="overflow-hidden border border-neutral-300 px-1 whitespace-nowrap"
+            @dblclick="p.READONLY || (editing = { recno: row.recno, column: i })"
+          >
+            <!-- a double click turns the cell into a field; Enter or leaving it stores what was typed -->
+            <input
+              v-if="editing?.recno === row.recno && editing.column === i"
+              v-focus
+              class="w-full min-w-10 bg-white px-0.5 text-black"
+              :aria-label="node.grid!.fields[i]"
+              :value="cell === true ? '.T.' : cell === false ? '.F.' : cell"
+              @keydown.enter="($event.target as HTMLInputElement).blur()"
+              @keydown.esc="editing = null"
+              @blur="commit(row.recno, i, cell, $event)"
+              @click.stop
+            />
+            <template v-else>{{ cellText(cell) }}</template>
+          </td>
         </tr>
       </tbody>
     </table>
