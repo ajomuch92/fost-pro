@@ -9,8 +9,8 @@ Hecho con [Tauri](https://tauri.app) (Rust), Vue 3, TypeScript y Tailwind CSS.
 ## Estado
 
 El proyecto está en desarrollo. Hoy se puede escribir y ejecutar programas, diseñar y ejecutar
-formularios enlazados a tablas, y trabajar con ellas mediante los comandos de registros de FoxPro. Falta
-el SQL.
+formularios enlazados a tablas, y trabajar con ellas mediante los comandos de registros de FoxPro o con
+SQL sobre una tabla.
 
 | Parte | Estado |
 | --- | --- |
@@ -24,7 +24,8 @@ el SQL.
 | Menús (`DEFINE MENU`, `DEFINE POPUP`, `_MSYSMENU`) | Hecho, primera versión |
 | Tablas: `USE`, `REPLACE`, `SCAN`, `SEEK`, índices, áreas de trabajo | Hecho, primera entrega |
 | Formularios enlazados a datos (`ControlSource`, `Grid`) | Hecho, primera versión |
-| SQL (`SELECT`, `UPDATE`, `DELETE FROM`), `BROWSE` | Pendiente |
+| SQL sobre una tabla (`SELECT`, `UPDATE`, `DELETE FROM`), `BROWSE`, `SET FILTER` | Hecho, primera versión |
+| SQL con varias tablas (`JOIN`), `HAVING`, subconsultas | Pendiente |
 | Proyectos: una carpeta, con panel de programas, formularios, clases y tablas | Hecho, primera versión |
 | Migrador desde FoxPro | Pendiente |
 | Reportes, ejecutables | Sin planear todavía |
@@ -36,7 +37,8 @@ el SQL.
 - **Sentencias:** `?`, asignación, `STORE`, `IF`, `DO CASE`, `FOR`, `FOR EACH`, `DO WHILE`, `LOOP`, `EXIT`,
   `PROCEDURE`, `FUNCTION`, `DO ... WITH`, `RETURN`, `PARAMETERS`, `LPARAMETERS`, `LOCAL`, `PRIVATE`,
   `PUBLIC`, `DIMENSION`, `RELEASE`, `CLEAR`, `WITH`, `#DEFINE`, `SET EXACT`, `SET DECIMALS`,
-  `SET PROCEDURE TO` para usar las funciones y clases de otro programa.
+  `SET PROCEDURE TO` para usar las funciones y clases de otro programa, `TRY...CATCH...FINALLY`, `THROW`,
+  `ON ERROR`, `TEXT...ENDTEXT` (con `TEXTMERGE`) y macros `&variable`.
 - **Semántica de FoxPro:** variables privadas visibles en las rutinas llamadas, paso por referencia,
   comparación de cadenas con `=` según `SET EXACT`, y 85 funciones integradas.
 - **Tablas:** `CREATE TABLE`, `CREATE CURSOR`, `USE`, `SELECT` de área, `APPEND BLANK`, `INSERT INTO`,
@@ -45,6 +47,10 @@ el SQL.
   `WHILE`. Se comportan como en FoxPro: número de registro, marca de borrado, puntero con `EOF()` y
   `BOF()`, campos de texto rellenos hasta su ancho, y un campo gana a una variable del mismo nombre
   (`m.nombre` llega a la variable).
+- **SQL y más datos:** `SELECT` sobre una tabla con `WHERE`, `GROUP BY`, `ORDER BY`, `DISTINCT`, `TOP`,
+  `COUNT()`, `SUM()`, `AVG()`, `MIN()`, `MAX()` e `INTO CURSOR | ARRAY | TABLE`; `UPDATE` y `DELETE FROM`;
+  `SET FILTER TO`; `BROWSE`; buffering con `CURSORSETPROP("Buffering")`, `TABLEUPDATE()` y `TABLEREVERT()`.
+  Los órdenes de `INDEX ON` se guardan con la tabla.
 - **Objetos:** clases con herencia, `ADD OBJECT`, `THIS`, `THISFORM`, `DODEFAULT()`.
 - **Formularios:** 20 controles, con los eventos `Load`, `Init`, `Click`, `InteractiveChange`, `GotFocus`,
   `LostFocus`, `Timer`, `Activate` y `Destroy`. `MESSAGEBOX()` e `INPUTBOX()` para dialogar con el usuario.
@@ -57,8 +63,10 @@ el SQL.
     del IDE.
   - Datos: `ControlSource` enlaza un `TextBox`, `EditBox`, `Spinner`, `CheckBox`, `ComboBox`, `ListBox` u
     `OptionGroup` a un campo (`cliente.nombre`) o a una variable pública: muestra el registro actual y
-    guarda lo que el usuario escribe. `Grid` muestra la tabla de su `RecordSource`, y un clic en una fila
-    la hace el registro actual.
+    guarda lo que el usuario escribe. `Grid` muestra la tabla de su `RecordSource`: un clic en una fila la
+    hace el registro actual y un doble clic edita la celda. Con `ColumnCount` se eligen sus columnas
+    (`Column1.ControlSource`, `Column1.Header1.Caption`, `Column1.Width`). Un `ComboBox` o `ListBox` se
+    llena desde una tabla con `RowSourceType` 6 (`cliente.nombre`) o 2 (un alias).
 - **Menús:** `DEFINE MENU`, `DEFINE PAD`, `DEFINE POPUP`, `DEFINE BAR`, `ON PAD`, `ON BAR`, `ON SELECTION`,
   `ACTIVATE MENU`, `DEACTIVATE MENU`, `RELEASE MENUS`, `RELEASE POPUPS` y `SET SYSMENU TO`, con submenús,
   separadores (`\-`), letra subrayada (`\<`), `SKIP FOR` y las funciones `BAR()`, `PROMPT()`, `POPUP()`,
@@ -70,6 +78,11 @@ el SQL.
   archivo de proyecto, `nombre.fostproj`, que guarda el programa principal (se marca con la estrella y se
   ejecuta con el botón del panel). La sección Recursos copia imágenes y otros archivos a `assets/`; un
   `Image` los usa con `Picture = "assets/logo.png"`, y el diseñador los sugiere al escribir esa propiedad.
+- **Edición:** autocompletado de palabras clave, funciones, nombres del programa y, tras un punto, los
+  objetos y propiedades del formulario; menú Editar con deshacer, rehacer, cortar, copiar, pegar,
+  seleccionar todo y buscar y reemplazar; el dibujo del formulario tiene su propio deshacer (Ctrl+Z).
+  El diseñador de menús (botón Menú) escribe el código `DEFINE PAD`/`DEFINE BAR` en el programa. El botón
+  derecho sobre el panel del proyecto crea programas y formularios, y renombra o elimina archivos.
 - **IDE:** editor con resaltado, diseñador de formularios (arrastrar, redimensionar, propiedades, código
   por evento; los controles se arrastran dentro y fuera de contenedores y pestañas), ventana de comandos
   con historial, y
@@ -83,21 +96,24 @@ La lista completa de comandos, funciones, clases y propiedades está en la ayuda
   MM/DD/AAAA.
 - `SET` solo acepta `EXACT`, `DECIMALS` y las opciones de interfaz (`TALK`, `SAFETY`...). Las demás dan
   error en lugar de ignorarse.
-- No existen la sustitución de macros (`&variable`), `TRY...CATCH`, `TEXT...ENDTEXT`, `READ EVENTS` ni
-  `TRANSFORM` con máscara.
+- No existe `READ EVENTS`. Una macro `&variable` ocupa una sentencia de una línea: no puede abrir un bloque
+  (`IF &condicion`). `CATCH WHEN` no se lee, y los errores no tienen los números de FoxPro: `ERROR()` da 1.
+- `TRANSFORM` entiende las máscaras más usadas (`9 # , . $ ! X A` y las funciones `@! @L @Z @R @$`).
 - Los nombres definidos en código se guardan en mayúsculas (`ADD OBJECT cmdOk` se llama `CMDOK`).
 - Un formulario sigue abierto hasta `Release()` o cerrarlo, aunque ninguna variable lo referencie.
 - Los controles solo tienen las propiedades básicas: posición, tamaño, texto, colores y fuente. Asignar
   una que no existe da error.
-- Los órdenes de `INDEX ON` duran mientras la aplicación está abierta: al reiniciar hay que crearlos de
-  nuevo. Los datos sí se conservan.
-- En las tablas faltan el `SELECT` de SQL, `BROWSE`, `SET FILTER`, `SET RELATION`, los campos de fecha y
-  hora, y las reglas de columna (`DEFAULT`, `PRIMARY KEY`).
+- El `SELECT` de SQL trabaja sobre una sola tabla: no hay `JOIN`, `HAVING`, subconsultas ni `UNION`, y
+  `ORDER BY` solo acepta columnas del resultado.
+- Con buffering, los cambios se escriben al momento y `TABLEREVERT()` los deshace; otras áreas los ven
+  antes de `TABLEUPDATE()`.
+- En las tablas faltan `SET RELATION`, los campos de fecha y hora, y las reglas de columna (`DEFAULT`,
+  `PRIMARY KEY`).
 - Los controles enlazados se actualizan solos cuando termina cada evento, sin llamar a `Refresh()`.
   Dentro de un método sí hace falta, como en FoxPro.
-- El `Grid` es de solo lectura, muestra todos los campos (no hay `Column` ni `ColumnCount`) y como máximo
-  1000 registros. No hay entorno de datos: las tablas se abren con `USE` en el evento `Load`. `RowSource`
-  de un `ComboBox` aún no acepta tablas, y no hay `TABLEUPDATE()` ni buffering.
+- El `Grid` muestra como máximo 1000 registros y sus columnas solo se detallan por código (el diseñador
+  ofrece `ColumnCount`). No hay entorno de datos: las tablas se abren con `USE` en el evento `Load`. Las
+  listas llenas desde una tabla tienen una sola columna, sin `BoundColumn` ni `RowSourceType` 3.
 - La ventana de un formulario con `ShowWindow = 2` la coloca el sistema (`Left` y `Top` no se usan), y
   cambiarle el tamaño no cambia `Width` ni `Height`. `INPUTBOX()` se pregunta en la ventana del IDE.
 - `HyperLink` es un control visible, no el objeto invisible de FoxPro; `NavigateTo()` sí funciona igual.
@@ -175,7 +191,7 @@ sin error y por qué fallan las demás. Hoy pasan 7 de 34.
 
 ## Lo que sigue
 
-1. Más base de datos: `SELECT` y demás SQL, `BROWSE`, órdenes que se conserven, filtros y relaciones.
-2. Más enlace a datos: `Grid` editable con columnas, entorno de datos, listas llenas desde tablas.
+1. Más base de datos: SQL con varias tablas (`JOIN`), `SET RELATION`, campos de fecha y hora.
+2. Más enlace a datos: entorno de datos, columnas del `Grid` en el diseñador, listas de varias columnas.
 3. El migrador que convierte un proyecto de FoxPro (`.prg`, `.dbf`, `.scx`) e informa de lo
    que no pudo convertir.
